@@ -37,6 +37,7 @@ import {
   executeCommand,
   getLinuxNodeByPath,
   getWinNodeByPath,
+  normalizeSystemState,
 } from './engine/cliEngine';
 import { PermissionsCalculator } from './components/PermissionsCalculator';
 
@@ -44,7 +45,8 @@ type ActiveSection = 'sandbox' | 'retos' | 'manual' | 'logros';
 type InspectorTab = 'vfs' | 'discos' | 'procesos' | 'redes';
 
 const STORAGE_KEY_PROGRESS = 'ghost_cli_sandbox_progress_v2';
-const STORAGE_KEY_SESSION = 'ghost_cli_sandbox_terminal_session_v1';
+// v2: el estado del sistema añade montajes y reglas de UFW (las sesiones v1 se descartan)
+const STORAGE_KEY_SESSION = 'ghost_cli_sandbox_terminal_session_v2';
 
 interface SavedProgress {
   studentName: string;
@@ -117,7 +119,7 @@ function loadSavedTerminalSession(): SavedTerminalSession | null {
       return {
         history: parsed.history,
         cmdHistoryList: parsed.cmdHistoryList,
-        systemState: parsed.systemState,
+        systemState: normalizeSystemState(parsed.systemState),
         shell: parsed.shell === 'cmd' ? 'cmd' : 'bash',
         activeChallengeId:
           parsed.activeChallengeId || GUIDED_CHALLENGES[0].id,
@@ -705,7 +707,7 @@ export default function App() {
               setCmdHistoryList(parsed.session.cmdHistoryList);
             }
             if (parsed.session.systemState) {
-              setSystemState(parsed.session.systemState);
+              setSystemState(normalizeSystemState(parsed.session.systemState));
             }
             if (parsed.session.shell) {
               setShell(parsed.session.shell);
@@ -730,9 +732,9 @@ export default function App() {
       return [
         'ls -la',
         'ps aux',
-        'ss -tulnp',
-        'sudo ufw enable',
-        'sudo fsck -y /dev/sdb1',
+        'sudo ss -tulnp',
+        'sudo ufw status',
+        'lsblk',
         'chmod 600 id_rsa',
         'sha256sum deploy.sh',
         'man fsck',
@@ -774,7 +776,7 @@ export default function App() {
   return (
     <div className="min-h-screen flex flex-col bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 transition-colors">
       {/* Top Bar Contract: Zone 1 (Brand) — Zone 2 (4 Nav Links) — Zone 3 (1 Primary CTA) */}
-      <header className="sticky top-0 z-30 flex items-center justify-between gap-8 px-6 py-3.5 bg-white/95 dark:bg-slate-900/95 backdrop-blur border-b border-slate-200 dark:border-slate-800">
+      <header className="sticky top-0 z-30 flex items-center justify-between gap-4 xl:gap-8 px-4 sm:px-6 py-3.5 bg-white/95 dark:bg-slate-900/95 backdrop-blur border-b border-slate-200 dark:border-slate-800">
         {/* Zone 1: Brand Title with non-distorted logo */}
         <a
           href="#top"
@@ -782,7 +784,7 @@ export default function App() {
             e.preventDefault();
             setActiveSection('sandbox');
           }}
-          className="flex items-center gap-3 text-base font-bold tracking-tight text-slate-900 dark:text-slate-100 whitespace-nowrap shrink-0"
+          className="flex items-center gap-3 text-base font-bold tracking-tight text-slate-900 dark:text-slate-100 whitespace-nowrap min-w-0"
         >
           <img
             src="./assets/aistudio/icono_81a3db5b.png"
@@ -790,11 +792,11 @@ export default function App() {
             referrerPolicy="no-referrer"
             className="h-9 w-9 object-contain shrink-0"
           />
-          <span>CLI Sandbox · Un Fantasma en el Sistema</span>
+          <span>CLI Sandbox<span className="hidden 2xl:inline"> · Un Fantasma en el Sistema</span></span>
         </a>
 
         {/* Zone 2: 4 Single-line Navigation Links */}
-        <nav className="hidden md:flex items-center gap-6 text-sm font-medium text-slate-600 dark:text-slate-300">
+        <nav className="hidden lg:flex items-center gap-4 xl:gap-6 text-sm font-medium text-slate-600 dark:text-slate-300">
           <button
             type="button"
             onClick={() => setActiveSection('sandbox')}
@@ -851,14 +853,15 @@ export default function App() {
             rel="noopener noreferrer"
             className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold text-white bg-sky-600 hover:bg-sky-500 rounded-lg transition-colors whitespace-nowrap shrink-0 shadow-xs"
           >
-            <span>unfantasmaenelsistema.com</span>
+            <span className="hidden sm:inline">unfantasmaenelsistema.com</span>
+            <span className="sm:hidden">Web</span>
             <ExternalLink className="w-3.5 h-3.5" />
           </a>
         </div>
       </header>
 
       {/* Mobile Nav Strip */}
-      <div className="flex md:hidden items-center justify-between gap-2 px-4 py-2 bg-slate-100 dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 overflow-x-auto">
+      <div className="flex lg:hidden items-center justify-between gap-2 px-4 py-2 bg-slate-100 dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 overflow-x-auto">
         <button
           type="button"
           onClick={() => setActiveSection('sandbox')}
