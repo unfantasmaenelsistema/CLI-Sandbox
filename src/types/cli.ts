@@ -47,6 +47,7 @@ export interface DiskVolume {
   status: 'Healthy' | 'Corrupted (Inodes/Bad Sectors)';
   errorsFound: number;
   repaired: boolean;
+  mounted?: boolean; // Linux: montado en `mount` (fsck exige desmontar antes)
 }
 
 export interface NetworkSocket {
@@ -66,6 +67,7 @@ export interface SystemHealthState {
   bashProcesses: ProcessItem[];
   bashDisks: DiskVolume[];
   bashFirewallEnabled: boolean;
+  bashFirewallRules: string[]; // reglas ufw allow/deny (ej. '22/tcp ALLOW')
   bashNginxActive: boolean;
   // Windows state
   cmdCwd: string;

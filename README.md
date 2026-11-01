@@ -1,113 +1,137 @@
-<div align="center">
-  <img src="public/assets/aistudio/icono_81a3db5b.png" alt="Logo Un Fantasma en el Sistema" width="120" />
-  <h1>Entrenador de Línea de Comandos (CLI Sandbox)</h1>
-  <p><strong>Emulador interactivo en JavaScript de consola dual (GNU/Bash y Windows CMD / PowerShell) para el aprendizaje práctico y seguro de administración de sistemas.</strong></p>
-  <p>
-    🌐 <a href="https://www.unfantasmaenelsistema.com/"><strong>https://www.unfantasmaenelsistema.com/</strong></a>
-  </p>
-</div>
+<p align="center">
+  <a href="https://www.unfantasmaenelsistema.com"><img src="public/assets/aistudio/icono_81a3db5b.png" width="110" alt="Un fantasma en el sistema"></a>
+</p>
 
----
+<h1 align="center">CLI Sandbox</h1>
 
-## 📋 Descripción del Proyecto
+<p align="center">
+  <b>Entrenador de línea de comandos con una consola Bash y otra CMD/PowerShell en el navegador</b><br>
+  Ficheros y permisos POSIX · Atributos y ACL de NTFS · fsck y chkdsk · DISM y SFC · Procesos · Tuberías y redirecciones · Red y cortafuegos · SHA-256 real
+</p>
 
-**Entrenador de Línea de Comandos (CLI Sandbox)** es un laboratorio didáctico interactivo desarrollado en TypeScript y React que simula en el navegador tanto un servidor **Linux (GNU/Bash)** como un entorno **Windows Server (CMD y PowerShell)**.
+<p align="center">
+  <a href="https://unfantasmaenelsistema.github.io/CLI-Sandbox/"><b>▶ Abrir el entrenador</b></a> ·
+  <a href="#qué-hace">Qué hace</a> ·
+  <a href="#retos">Retos</a> ·
+  <a href="#qué-modela-y-qué-no">Qué modela</a> ·
+  <a href="#desarrollo">Desarrollo</a> ·
+  <a href="https://www.unfantasmaenelsistema.com">unfantasmaenelsistema.com</a> ·
+  <a href="LICENSE">MIT</a>
+</p>
 
-Su objetivo es permitir a estudiantes y profesionales de administración de sistemas practicar operaciones críticas —como reparación de sistemas de archivos (`chkdsk`, `fsck`), mantenimiento de imagen del sistema (`dism`, `sfc /scannow`), endurecimiento de permisos (`chmod`, `chown`, `attrib`, `icacls`), finalización de procesos zombi (`kill -9`, `taskkill`, `Stop-Process`), auditoría de red (`ss -tulnp`, `netstat -ano`, `ufw`, `ipconfig /flushdns`), verificación criptográfica (`sha256sum`, `certutil`) y tuberías/redirecciones (`|`, `>`, `>>`)— **sin riesgo de dañar un sistema operativo real**.
+<p align="center">
+  <img src="https://img.shields.io/badge/navegador-sin_servidor-10b981?style=flat-square" alt="Sin servidor">
+  <img src="https://img.shields.io/badge/datos-100%25_locales-0284c7?style=flat-square" alt="Datos 100 % locales">
+  <img src="https://img.shields.io/badge/retos-16-f59e0b?style=flat-square" alt="16 retos">
+  <img src="https://img.shields.io/badge/licencia-MIT-blue?style=flat-square" alt="MIT">
+</p>
 
----
+<p align="center">
+  <img src="docs/capturas/01-laboratorio-dual.webp" width="900" alt="Laboratorio dual: terminal Bash donde fsck se niega a reparar /dev/sdb1 montado, se desmonta y se repara; a la derecha, el reto guiado con sus pasos">
+</p>
 
-## 📸 Capturas de Pantalla
+Dos máquinas simuladas en el navegador, un servidor Ubuntu y un Windows Server 2025, con su sistema de ficheros, procesos, discos y red. Lo que escribes en la terminal cambia ese estado como en un sistema real: si quitas permisos, el fichero deja de poder leerse; si intentas reparar un volumen montado, `fsck` se niega; si activas el cortafuegos sin permitir SSH, te avisa de que te quedarías fuera. Nada de esto toca tu equipo.
 
-### 1. Laboratorio Dual (Terminal Interactiva + Telemetría en Vivo + Retroalimentación Didáctica)
-![Vista Laboratorio Dual](public/docs/screenshots/01-laboratorio-dual.svg)
+> [!NOTE]
+> Es un emulador didáctico, no una shell completa: implementa los comandos de los retos y sus opciones más habituales. Los hashes SHA-256 y MD5 sí son reales: coinciden con los de `sha256sum`, `md5sum`, `certutil` y `Get-FileHash` sobre el mismo contenido.
 
-### 2. Simulador Interactivo de Permisos (`chmod` / `attrib`) y Diccionario Comparado
-![Vista Simulador de Permisos y Referencia CLI](public/docs/screenshots/02-simulador-permisos-referencia.svg)
+## Qué hace
 
-### 3. Sistema de Logros, Credencial Técnica y Respaldo de Sesión
-![Vista de Logros y Certificación](public/docs/screenshots/03-retos-logros-certificado.svg)
+- **Consola Bash** con sistema de ficheros virtual, usuario `sysadmin` (grupos `adm`, `sudo` y `www-data`) y permisos POSIX de verdad: lectura, escritura y borrado se comprueban con propietario, grupo y otros, y `sudo` es root.
+- **Consola CMD/PowerShell** con atributos NTFS (`R`, `H`, `S`, `A`), ACL con `icacls` y cmdlets como `Get-ChildItem`, `Get-FileHash`, `Get-Volume`, `Repair-Volume`, `Get-Process` y `Stop-Process`.
+- **Tuberías y redirecciones** (`|`, `>`, `>>`, `&&`) con `grep`, `findstr`, `Select-String`, `wc`, `head`, `tail` y `tee`.
+- **Análisis didáctico de cada comando**: desglose token a token, equivalente en el otro sistema y una regla de seguridad en producción.
+- **Telemetría en vivo** del sistema simulado: ficheros con sus permisos y hash, discos, procesos y red.
+- **16 retos guiados** con pistas, **modo examen** (+50 % de experiencia), 12 logros, certificado y registro de la sesión exportables, y copia de seguridad en JSON.
+- La sesión (terminal, historial, sistema de ficheros y progreso) se guarda en el propio navegador.
 
----
+<p align="center">
+  <img src="docs/capturas/02-terminal-y-analisis.webp" width="700" alt="Terminal con sha256sum -c que confirma la integridad de deploy.sh, chown denegado sin sudo y aviso al activar UFW sin regla para SSH; debajo, el análisis didáctico del comando">
+</p>
 
-## ✨ Características Principales
+## Retos
 
-- 🖥️ **Consola Dual Realista (`GNU/Bash` y `Windows CMD / PowerShell`)**:
-  - Sistema de Archivos Virtual (VFS) en memoria con soporte de permisos octales/simbólicos en Linux, propietarios (`root:www-data`), atributos NTFS (`R`, `H`, `S`, `A`) y listas de control de acceso (`ACL`) en Windows.
-  - Navegación de historial con flechas `↑` / `↓`, autocompletado de ficheros con tecla `Tab` y páginas de manual integradas (`man <comando>` / `help`).
-  - Soporte real de encadenamiento (`&&`), tuberías (`|`) con `grep` / `findstr` y redirecciones de flujo estándar a fichero (`>` sobrescribir y `>>` anexar).
-- 🎯 **16 Retos Guiados Paso a Paso + Modo Examen (+50% XP)**:
-  - Escenarios prácticos divididos en 6 áreas: *Gestión de Ficheros*, *Permisos y Criptografía SHA-256*, *Comprobación de Discos (`chkdsk`/`fsck`)*, *Herramientas de Sistema (`DISM`/`SFC`/`PowerShell`)*, *Redirecciones y Tuberías* y *Redes y Cortafuegos (`netstat`/`ss`/`ufw`)*.
-  - **Modo Guiado**: incluye pistas explicativas e inserción rápida en consola.
-  - **Modo Examen**: oculta ayudas para evaluar el dominio real del estudiante y otorga **+50% de experiencia (XP)**.
-- 🧠 **Retroalimentación Didáctica Inmediata y Equivalencias Cruzadas**:
-  - Cada comando ejecutado se analiza al instante mostrando su desglose sintáctico token por token, su **equivalente directo en el otro sistema operativo (Linux ↔ Windows)** y una **Regla de Oro de Seguridad en Producción**.
-- 🔍 **Telemetría en Vivo del Sistema Virtual (4 Pestañas)**:
-  - **Ficheros y Permisos**: Explorador interactivo del directorio actual con vista previa de contenido y cálculo rápido de hash SHA-256.
-  - **Discos e Integridad**: Estado en vivo de volúmenes (`/dev/sda1`, `/dev/sdb1`, `C:`, `D:`) y salud de componentes Windows (`WinSxS DISM` y `System32 SFC`).
-  - **Procesos**: Tabla en tiempo real de procesos en ejecución con consumo de CPU/RAM y detección de procesos intrusos.
-  - **Red y Firewall**: Estado del cortafuegos `UFW` en Linux y de la caché de resolución DNS en Windows.
-- 💾 **Persistencia en `localStorage` y Exportación de Log Profesional (`.TXT`)**:
-  - La sesión completa de la terminal (historial de salidas, historial de comandos `↑`/`↓`, estado del VFS y progreso de retos/logros) se guarda automáticamente en `localStorage` para retomar el trabajo al recargar la página.
-  - Botón **`Exportar Log (.TXT)`** en la terminal para descargar una traza completa de auditoría con todos los comandos ejecutados, sus salidas `STDOUT/STDERR` y los apuntes didácticos de repaso.
-  - Exportación de **Certificado Técnico (`.TXT`)** y copia de seguridad completa en **`.JSON`**.
+| Área | Bash | CMD / PowerShell |
+| :-- | :-- | :-- |
+| Ficheros | Respaldo en `backups/` y limpieza del volcado | Auditoría con `dir /a` y archivado |
+| Permisos | `id_rsa` a 600, `deploy.sh` a 750 y `root:www-data` | Atributos de `credenciales.txt` y ACL con `icacls` |
+| Discos | `lsblk`, `umount`, `fsck -y` y volver a montar | `chkdsk D:` y `chkdsk D: /f /r` |
+| Sistema | `ps aux` y `kill -9` de un proceso descontrolado | DISM antes que SFC; `taskkill /F` de un minero |
+| Redirecciones | `grep ERROR` del syslog a un informe | `tasklist \| findstr svchost` a un fichero |
+| Redes | `ss -tulnp`, permitir SSH y activar UFW | `netstat -ano` e `ipconfig /flushdns` |
+| PowerShell | — | `Get-Volume` y `Repair-Volume -SpotFix` |
+| Integridad | `sha256sum` a un fichero y comprobación con `-c` | — |
+| Final | Reinicio de nginx e informe con `df -h` | — |
 
----
+Las pruebas automáticas del repositorio teclean el comando de ejemplo de cada paso de los 16 retos, en una misma sesión, y comprueban que todos quedan completados.
 
-## 🛠️ Tabla Resumen de Comandos Soportados
+<p align="center">
+  <img src="docs/capturas/03-retos-guiados.webp" width="700" alt="Catálogo de los 16 retos guiados con su área, dificultad y experiencia">
+</p>
 
-| Categoría | GNU/Bash (Linux) | Windows CMD / PowerShell |
-| :--- | :--- | :--- |
-| **Navegación y Ficheros** | `pwd`, `ls -la`, `stat`, `cd`, `mkdir -p`, `touch`, `cp`, `mv`, `rm -rf`, `cat`, `head`, `tail`, `find` | `cd`, `dir /a`, `Get-ChildItem -Force`, `mkdir`, `copy`, `move`, `del`, `Remove-Item`, `type`, `Get-Content`, `tree` |
-| **Permisos y Propietario** | `chmod <octal> <f>`, `sudo chown <u:g> <f>`, `id`, `whoami` | `attrib [+/-r/h/s] <f>`, `icacls <f> /grant Usuario:(F)`, `whoami` |
-| **Comprobación de Discos** | `lsblk`, `df -h`, `sudo fsck -y /dev/sdb1` | `wmic logicaldisk`, `Get-Volume`, `chkdsk D: /f /r`, `Repair-Volume -DriveLetter D -SpotFix` |
-| **Integridad del Sistema** | `sudo systemctl status/restart nginx`, `uname -a`, `free -h` | `dism /online /cleanup-image /restorehealth`, `sfc /scannow`, `systeminfo`, `ver` |
-| **Gestión de Procesos** | `ps aux`, `top`, `sudo kill -9 <PID>` | `tasklist`, `Get-Process`, `taskkill /PID <id> /F`, `Stop-Process -Id <id> -Force` |
-| **Redes y Cortafuegos** | `ss -tulnp`, `netstat -tulnp`, `ip a`, `ping`, `sudo ufw enable/status` | `netstat -ano`, `ipconfig /all`, `ipconfig /flushdns`, `ping` |
-| **Criptografía e Historial** | `sha256sum <f>`, `md5sum <f>`, `history`, `history -c`, `man <cmd>` | `certutil -hashfile <f> SHA256`, `Get-FileHash <f>`, `history`, `Get-History`, `Clear-History` |
-| **Tuberías y Redirección** | `cmd \| grep PATRON`, `cmd > archivo`, `cmd >> archivo` | `cmd \| findstr PATRON`, `cmd > archivo`, `cmd >> archivo` |
+## Qué modela y qué no
 
----
+- `fsck` exige `sudo` y el volumen desmontado; la raíz no se puede desmontar en uso. `chkdsk C: /f` no repara al momento: se programa para el siguiente reinicio, como en Windows.
+- `sfc /scannow` no consigue reparar mientras el almacén WinSxS esté dañado: primero `dism /restorehealth`.
+- `kill` sin `-9` envía SIGTERM, que el proceso colgado ignora; `taskkill` sin `/F` tampoco cierra un proceso colgado.
+- La redirección `>` la hace tu shell sin privilegios, así que `sudo echo x > /etc/f` falla igual que en Linux; para escribir como root se usa `| sudo tee`.
+- `findstr` distingue mayúsculas salvo con `/i`; `Select-String` no las distingue salvo con `-CaseSensitive`.
+- Los procesos críticos (`systemd`, `sshd`, `System`, `svchost`) están protegidos para que el ejercicio no termine con el servidor caído. La unidad `D:` solo existe para `chkdsk` y `Repair-Volume`.
 
-## 🚀 Instalación y Ejecución Local
+<p align="center">
+  <img src="docs/capturas/04-permisos-y-referencia.webp" width="700" alt="Simulador de permisos chmod/attrib y referencia comparada de comandos Linux y Windows">
+</p>
 
-1. **Clonar el repositorio:**
-   ```bash
-   git clone https://github.com/TU_USUARIO/cli-sandbox-entrenador.git
-   cd cli-sandbox-entrenador
-   ```
+## Privacidad
 
-2. **Instalar dependencias:**
-   ```bash
-   npm install
-   ```
+Todo se ejecuta en el navegador, sin servidor ni cuentas. La sesión y el progreso se guardan en el almacenamiento local del navegador y se borran con los botones de la propia app. Las fuentes van incluidas en la web y una política CSP estricta impide cargar código o estilos de terceros.
 
-3. **Iniciar el servidor de desarrollo:**
-   ```bash
-   npm run dev
-   ```
-   La aplicación estará disponible en `http://localhost:3000`.
+## Desarrollo
 
-4. **Generar versión de producción para despliegue estático:**
-   ```bash
-   npm run build
-   ```
-   Los archivos estáticos optimizados se generarán en la carpeta `dist/`.
+Requisitos: Node.js 20 o superior.
 
----
+```bash
+git clone https://github.com/unfantasmaenelsistema/CLI-Sandbox.git
+cd CLI-Sandbox
+npm ci
+npm run dev      # http://localhost:3000
+npm test         # pruebas del motor (Vitest)
+npm run lint     # comprobación de tipos
+npm run build    # versión estática en dist/
+```
 
-## 🌐 Despliegue en GitHub Pages
+El workflow `.github/workflows/deploy.yml` comprueba tipos, pasa las pruebas, compila y publica `dist/` en GitHub Pages en cada push a `main`.
 
-El proyecto ya está preconfigurado para funcionar directamente en **GitHub Pages** desde cualquier subruta (`base: './'` en `vite.config.ts`) e incluye el flujo de trabajo automatizado en `.github/workflows/deploy.yml`:
+```text
+src/
+├── engine/cliEngine.ts       # sistema simulado, comandos de Bash y CMD/PowerShell, análisis didáctico
+├── engine/hash.ts            # SHA-256 y MD5 síncronos
+├── engine/*.test.ts
+├── data/challenges.ts        # los 16 retos y sus validaciones
+├── data/referenceManual.ts   # referencia comparada y logros
+└── components/               # simulador de permisos
+```
 
-1. Sube este repositorio a tu cuenta de GitHub (`main` o `master`).
-2. En tu repositorio de GitHub, entra en **Settings → Pages**.
-3. En la sección **Build and deployment → Source**, selecciona **GitHub Actions**.
-4. Con cada `git push`, la acción compilará automáticamente el proyecto y lo publicará en tu URL de GitHub Pages.
+## Cambios
 
----
+### 2.0.0 (2026-11-01)
 
-## 👤 Autoría y Enlaces
+- Publicado en la organización con despliegue en GitHub Pages: el workflow original no podía funcionar (`npm install` fallaba por un conflicto de versiones de `esbuild` y la caché de npm no tenía lockfile). El código tampoco pasaba `tsc --noEmit`.
+- **Hashes reales**: `sha256sum`, `md5sum`, `certutil` y `Get-FileHash` devolvían un hash inventado de 64 bits relleno con una cadena fija, que además dependía del nombre del fichero. Ahora son SHA-256 y MD5 auténticos del contenido; se añade `sha256sum -c` y un tercer paso de verificación al reto 16.
+- **Permisos POSIX**: antes no se comprobaba nada (`chown` y `fsck` funcionaban sin `sudo`, `chmod 000` no impedía leer). Ahora lectura, escritura, borrado, `chmod`, `chown`, `kill`, `systemctl`, `ufw`, `mount` y `fsck` respetan propietario, grupo y root.
+- **Discos**: `fsck` exige el volumen desmontado (nuevos `mount` y `umount`; el reto 6 pasa a 4 pasos). `chkdsk C: /f` se programa para el reinicio.
+- **Ficheros**: `mv` de una carpeta la convertía en un fichero vacío; `touch` añadía un salto de línea; `mv` a una ruta inexistente borraba el original; `cp` y `rm` de carpetas no pedían `-r`; `mkdir` creaba padres sin `-p`. En Windows, `move` también destruía carpetas y `del` las borraba enteras (nuevo `rmdir /s`).
+- **Filtros**: `grep` activaba `-i` con cualquier patrón que llevara una «i»; `wc` ignoraba el fichero; `head`/`tail` no aceptaban `-n` y daban 5 líneas en vez de 10; `find` ignoraba sus opciones; `findstr` no distinguía mayúsculas. Se añaden `tee`, `grep -v/-n/-c` y `chmod` simbólico completo.
+- **Sistema y red**: `kill` sin `-9`, `taskkill` sin `/F` y SFC antes de DISM se comportan como en la realidad; `ss -l` solo muestra lo que escucha; UFW admite reglas y avisa si se activa sin permitir SSH (el reto 14 añade ese paso).
+- **Textos**: el reto 9 hablaba de un proceso «zombi» que no lo era (a un zombi no se le puede matar con `kill -9`); `/var/log/syslog` solo se puede leer porque `sysadmin` está en el grupo `adm`, que faltaba en `id`.
+- **Interfaz**: la cabecera desbordaba a 1.000 px y en el móvil. Fuentes incluidas en la web en lugar de Google Fonts, CSP estricta, fuera dependencias de Gemini y Express que no se usaban, y 28 pruebas automáticas.
 
-Desarrollado para **Un Fantasma en el Sistema**:
-- 🌐 Sitio web oficial: [https://www.unfantasmaenelsistema.com/](https://www.unfantasmaenelsistema.com/)
+### 1.0.0
+
+- Versión inicial generada con Google AI Studio.
+
+## Créditos y licencia
+
+Creado por **[Un Fantasma en el Sistema](https://www.unfantasmaenelsistema.com)** para los módulos de sistemas operativos y administración de sistemas de FP. Fuentes Plus Jakarta Sans y JetBrains Mono (SIL Open Font License) vía Fontsource; iconos de Lucide (ISC).
+
+Código bajo licencia [MIT](LICENSE).

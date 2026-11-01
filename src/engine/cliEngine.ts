@@ -4,28 +4,61 @@ import {
   SystemHealthState,
   VFSNode,
 } from '../types/cli';
+import { md5Hex, sha256Hex, utf8Length } from './hash';
 
-function computeDeterministicHash(input: string): string {
-  let h1 = 0xdeadbeef ^ input.length;
-  let h2 = 0x41c6ce57 ^ input.length;
-  for (let i = 0; i < input.length; i++) {
-    const ch = input.charCodeAt(i);
-    h1 = Math.imul(h1 ^ ch, 2654435761);
-    h2 = Math.imul(h2 ^ ch, 1597334677);
+// Usuario de la consola Linux y sus grupos (en Ubuntu el primer usuario está en adm y sudo)
+const BASH_USER = 'sysadmin';
+const BASH_GROUPS = ['sysadmin', 'adm', 'sudo', 'www-data'];
+
+type PermBit = 'r' | 'w' | 'x';
+
+// Comprobación de permisos POSIX propietario/grupo/otros; root (sudo) lo puede todo
+function canAccess(node: VFSNode, bit: PermBit, isSudo: boolean): boolean {
+  if (isSudo) return true;
+  const [user, group] = node.owner.split(':');
+  const offset = user === BASH_USER ? 0 : BASH_GROUPS.includes(group || user) ? 3 : 6;
+  const index = offset + (bit === 'r' ? 0 : bit === 'w' ? 1 : 2);
+  return node.permissions[index] === bit;
+}
+
+function isOwner(node: VFSNode): boolean {
+  return node.owner.split(':')[0] === BASH_USER;
+}
+
+function parentPath(absPath: string): string {
+  const parts = absPath.split('/').filter(Boolean);
+  parts.pop();
+  return '/' + parts.join('/');
+}
+
+// Motivo por el que no se puede crear o sobrescribir absPath (null si se puede)
+function linuxWriteDenied(root: VFSNode, absPath: string, isSudo: boolean): string | null {
+  const existing = getLinuxNodeByPath(root, absPath);
+  if (existing) {
+    if (existing.type === 'dir') return 'Es un directorio';
+    return canAccess(existing, 'w', isSudo) ? null : 'Permiso denegado';
   }
-  h1 =
-    Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^
-    Math.imul(h2 ^ (h2 >>> 13), 3266489909);
-  h2 =
-    Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^
-    Math.imul(h1 ^ (h1 >>> 13), 3266489909);
-  const base =
-    (h1 >>> 0).toString(16).padStart(8, '0') +
-    (h2 >>> 0).toString(16).padStart(8, '0');
-  return (base + '9f8e7d6c5b4a3f2e1d0c9b8a7f6e5d4c3b2a1908f7e6d5c4').slice(
-    0,
-    64
-  );
+  const dir = getLinuxNodeByPath(root, parentPath(absPath));
+  if (!dir || dir.type !== 'dir') return 'No existe el archivo o el directorio';
+  return canAccess(dir, 'w', isSudo) ? null : 'Permiso denegado';
+}
+
+// Ajusta el tamaño de cada fichero a los bytes reales de su contenido
+function syncSizes(node: VFSNode): void {
+  if (node.type === 'file') {
+    node.size = utf8Length(node.content || '');
+    return;
+  }
+  for (const child of Object.values(node.children || {})) syncSizes(child);
+}
+
+// Completa estados guardados con versiones anteriores (localStorage o JSON importado)
+export function normalizeSystemState(state: SystemHealthState): SystemHealthState {
+  return {
+    ...state,
+    bashFirewallRules: Array.isArray(state.bashFirewallRules) ? state.bashFirewallRules : [],
+    bashDisks: state.bashDisks.map((d) => ({ ...d, mounted: d.mounted !== false })),
+  };
 }
 
 export function createInitialSystemState(): SystemHealthState {
@@ -137,7 +170,7 @@ export function createInitialSystemState(): SystemHealthState {
                 attributes: [],
                 acl: '',
                 content:
-                  'Tareas pendientes SysAdmin:\n1. Limpiar temp_crash.dmp y respaldar nginx.conf en backups/\n2. Corregir permisos de id_rsa (600) y deploy.sh (750, root:www-data)\n3. Reparar partición /dev/sdb1 con sudo fsck -y /dev/sdb1\n4. Terminar proceso runaway_syncd (PID 3104)\n5. Auditar puertos (ss -tulnp) y activar firewall (sudo ufw enable)',
+                  'Tareas pendientes SysAdmin:\n1. Limpiar temp_crash.dmp y respaldar nginx.conf en backups/\n2. Corregir permisos de id_rsa (600) y deploy.sh (750, root:www-data)\n3. Reparar /dev/sdb1: sudo umount /mnt/datos, sudo fsck -y /dev/sdb1 y volver a montarlo\n4. Terminar proceso runaway_syncd (PID 3104)\n5. Auditar puertos (sudo ss -tulnp), permitir SSH (sudo ufw allow OpenSSH) y activar firewall (sudo ufw enable)',
               },
             },
           },
@@ -373,6 +406,8 @@ export function createInitialSystemState(): SystemHealthState {
     },
   };
 
+  syncSizes(bashRoot);
+
   return {
     bashCwd: '/home/sysadmin',
     bashRoot,
@@ -430,6 +465,7 @@ export function createInitialSystemState(): SystemHealthState {
         status: 'Healthy',
         errorsFound: 0,
         repaired: true,
+        mounted: true,
       },
       {
         id: '/dev/sdb1',
@@ -440,9 +476,11 @@ export function createInitialSystemState(): SystemHealthState {
         status: 'Corrupted (Inodes/Bad Sectors)',
         errorsFound: 14,
         repaired: false,
+        mounted: true,
       },
     ],
     bashFirewallEnabled: false,
+    bashFirewallRules: [],
     bashNginxActive: true,
     cmdCwd: 'C:\\Users\\Administrador\\Proyectos',
     cmdRoot,
@@ -607,13 +645,16 @@ export function getWinNodeByPath(
   root: VFSNode,
   absPath: string
 ): VFSNode | null {
+  // El árbol de ficheros simulado es la unidad C:; D: es un volumen de datos solo para chkdsk
+  const drive = absPath.match(/^([A-Za-z]):/);
+  if (drive && drive[1].toUpperCase() !== 'C') return null;
   const clean = absPath.replace(/^[A-Za-z]:\\?/, '');
   if (!clean) return root;
   const parts = clean.split('\\').filter(Boolean);
   let curr: VFSNode | undefined = root;
   for (const p of parts) {
     if (!curr || curr.type !== 'dir' || !curr.children) return null;
-    const key = Object.keys(curr.children).find(
+    const key: string | undefined = Object.keys(curr.children).find(
       (k) => k.toLowerCase() === p.toLowerCase()
     );
     curr = key ? curr.children[key] : undefined;
@@ -646,7 +687,7 @@ function writeLinuxFile(
   dirNode.children[fileName] = {
     name: fileName,
     type: 'file',
-    size: newContent.length,
+    size: utf8Length(newContent),
     updatedAt: '2026-11-01 08:30',
     permissions: existing?.permissions || 'rw-r--r--',
     octal: existing?.octal || '644',
@@ -688,7 +729,7 @@ function writeWinFile(
   dirNode.children[actualName] = {
     name: actualName,
     type: 'file',
-    size: newContent.length,
+    size: utf8Length(newContent),
     updatedAt: '01/11/2026 08:30',
     permissions: 'rw-r--r--',
     octal: '644',
@@ -822,7 +863,7 @@ function executeSinglePipeline(
 
   for (let i = 0; i < pipeSegments.length; i++) {
     const seg = pipeSegments[i];
-    const segResult =
+    const segResult: ReturnType<typeof runBashAtomic> =
       shell === 'bash'
         ? runBashAtomic(seg, state, stdinBuffer, commandHistory)
         : runCmdAtomic(seg, state, stdinBuffer, commandHistory);
@@ -842,6 +883,15 @@ function executeSinglePipeline(
   if (redirectTarget && lastStatus !== 'error') {
     if (shell === 'bash') {
       const targetPath = resolveLinuxPath(state.bashCwd, redirectTarget);
+      // La redirección la abre tu shell con tu usuario: «sudo cmd > /etc/x» no sirve (usa sudo tee)
+      const denied = linuxWriteDenied(state.bashRoot, targetPath, false);
+      if (denied) {
+        return {
+          nextState: state,
+          output: `bash: ${redirectTarget}: ${denied}${denied === 'Permiso denegado' ? ' (la redirección > la hace tu shell sin sudo; prueba: comando | sudo tee ' + redirectTarget + ')' : ''}`,
+          status: 'error',
+        };
+      }
       const ok = writeLinuxFile(
         state.bashRoot,
         targetPath,
@@ -930,7 +980,13 @@ const BASH_MAN_PAGES: Record<string, string> = {
   kill: 'NOMBRE: kill - envía una señal a un proceso\nSINOPSIS: sudo kill -9 <PID> (envía SIGKILL para terminación inmediata).',
   grep: 'NOMBRE: grep - imprime líneas que concuerdan con un patrón\nSINOPSIS: grep [-i] [-n] PATRÓN [FICHERO]',
   sha256sum:
-    'NOMBRE: sha256sum - calcula y verifica resúmenes de mensaje SHA256 (256-bit)\nSINOPSIS: sha256sum <fichero>',
+    'NOMBRE: sha256sum - calcula y verifica resúmenes de mensaje SHA256 (256-bit)\nSINOPSIS: sha256sum <fichero> > lista.sha256  |  sha256sum -c lista.sha256 (comprueba que nada ha cambiado)',
+  mount: 'NOMBRE: mount - monta un sistema de ficheros\nSINOPSIS: mount (lista los montados) | sudo mount /dev/sdb1 | sudo mount -a (todo lo de /etc/fstab)',
+  umount:
+    'NOMBRE: umount - desmonta un sistema de ficheros\nSINOPSIS: sudo umount /mnt/datos | sudo umount /dev/sdb1\nNOTA: no se puede desmontar si algún proceso (o tu propia shell con cd) está dentro.',
+  tee: 'NOMBRE: tee - lee de la entrada estándar y escribe en la salida y en ficheros\nSINOPSIS: comando | sudo tee [-a] /etc/fichero\nNOTA: «sudo echo x > /etc/f» falla porque la redirección la hace tu shell sin privilegios; con «| sudo tee» escribe root.',
+  find: 'NOMBRE: find - busca ficheros en una jerarquía de directorios\nSINOPSIS: find [ruta] [-name "*.log"] [-type f|d]',
+  wc: 'NOMBRE: wc - cuenta líneas, palabras y bytes\nSINOPSIS: wc [-l] [-w] [-c] [fichero]',
 };
 
 function runBashAtomic(
@@ -987,13 +1043,13 @@ function runBashAtomic(
       return {
         output: [
           'Comandos disponibles en GNU Bash (CLI Sandbox):',
-          '  Navegación y Ficheros : pwd, ls [-la], stat <f>, cd <ruta>, mkdir [-p] <dir>, touch <f>, cp, mv, rm [-rf], cat, head, tail, wc -l, find, echo',
-          '  Integridad y Manual   : sha256sum <f>, md5sum <f>, man <comando>, id, whoami, uname -a, free -h',
-          '  Filtrado y Redirección: grep <patrón> [f], comando | grep <patrón>, comando > fichero, comando >> fichero',
-          '  Permisos y Seguridad  : chmod <octal> <fichero>, sudo chown <usuario:grupo> <fichero>',
-          '  Discos y Bloques      : lsblk, df -h, sudo fsck -y /dev/sdb1',
-          '  Procesos y Servicios  : ps aux, top, sudo kill -9 <PID>, sudo systemctl <status|restart> <servicio>',
-          '  Redes y Cortafuegos   : ss -tulnp, netstat -tulnp, ip a, ping <host>, sudo ufw <status|enable|disable>',
+          '  Navegación y Ficheros : pwd, ls [-la], stat <f>, cd <ruta>, mkdir [-p] <dir>, touch <f>, cp [-r], mv, rm [-rf], cat, head/tail [-n N], wc [-lwc], find [ruta] [-name patrón] [-type f|d], echo',
+          '  Integridad y Manual   : sha256sum <f>, sha256sum -c <lista>, md5sum <f>, man <comando>, id, whoami, uname -a, free -h',
+          '  Filtrado y Redirección: grep [-i -v -n -c] <patrón> [f], comando | grep <patrón>, comando > fichero, comando >> fichero, comando | sudo tee [-a] fichero',
+          '  Permisos y Seguridad  : chmod <600|755|u+x|go-rwx> <fichero>, sudo chown <usuario:grupo> <fichero>',
+          '  Discos y Bloques      : lsblk, df -h, mount, sudo umount <punto|disp.>, sudo fsck -y /dev/sdb1, sudo mount <disp.|-a>',
+          '  Procesos y Servicios  : ps aux, top, kill [-9] <PID>, sudo systemctl <status|restart|stop> <servicio>',
+          '  Redes y Cortafuegos   : ss -tulnp / ss -tunp, ip a, ping <host>, sudo ufw <status|allow|deny|enable|disable>',
         ].join('\n'),
         status: 'success',
       };
@@ -1026,7 +1082,7 @@ function runBashAtomic(
       return {
         output: isSudo
           ? 'uid=0(root) gid=0(root) grupos=0(root)'
-          : 'uid=1000(sysadmin) gid=1000(sysadmin) grupos=1000(sysadmin),27(sudo),33(www-data)',
+          : 'uid=1000(sysadmin) gid=1000(sysadmin) grupos=1000(sysadmin),4(adm),27(sudo),33(www-data)',
         status: 'success',
       };
 
@@ -1144,40 +1200,70 @@ function runBashAtomic(
 
     case 'sha256sum':
     case 'md5sum': {
-      const target = args.find((a) => !a.startsWith('-'));
-      if (!target) {
+      const hashOf = (text: string) => (cmd === 'md5sum' ? md5Hex(text) : sha256Hex(text));
+      // sha256sum -c lista.sha256: vuelve a calcular cada hash y lo compara
+      if (args.includes('-c') || args.includes('--check')) {
+        const listArg = args.find((a) => !a.startsWith('-'));
+        const listText = listArg
+          ? getLinuxNodeByPath(state.bashRoot, resolveLinuxPath(state.bashCwd, listArg))?.content
+          : stdin;
+        if (listText == null) {
+          return { output: `${cmd}: ${listArg ?? '-'}: No existe el archivo o el directorio`, status: 'error' };
+        }
+        const results: string[] = [];
+        let failures = 0;
+        for (const line of listText.split('\n').filter((l) => l.trim())) {
+          const m = line.match(/^([0-9a-fA-F]+)\s+\*?(.+)$/);
+          if (!m) continue;
+          const node = getLinuxNodeByPath(state.bashRoot, resolveLinuxPath(state.bashCwd, m[2].trim()));
+          const ok = Boolean(node && node.type === 'file' && hashOf(node.content || '') === m[1].toLowerCase());
+          if (!ok) failures += 1;
+          results.push(`${m[2].trim()}: ${node ? (ok ? 'La suma coincide' : 'FALLÓ') : 'NO SE PUEDE LEER'}`);
+        }
+        if (failures) results.push(`${cmd}: ATENCIÓN: ${failures} suma(s) calculada(s) NO coincide(n)`);
+        return { output: results.join('\n'), status: failures ? 'error' : 'success' };
+      }
+      const targets = args.filter((a) => !a.startsWith('-'));
+      if (targets.length === 0) {
+        if (stdin !== null) return { output: `${hashOf(stdin)}  -`, status: 'success' };
         return { output: `${cmd}: falta el archivo a verificar`, status: 'error' };
       }
-      const abs = resolveLinuxPath(state.bashCwd, target);
-      const node = getLinuxNodeByPath(state.bashRoot, abs);
-      if (!node || node.type === 'dir') {
-        return {
-          output: `${cmd}: ${target}: No existe el archivo o es un directorio`,
-          status: 'error',
-        };
+      const lines: string[] = [];
+      for (const target of targets) {
+        const node = getLinuxNodeByPath(state.bashRoot, resolveLinuxPath(state.bashCwd, target));
+        if (!node) return { output: `${cmd}: ${target}: No existe el archivo o el directorio`, status: 'error' };
+        if (node.type === 'dir') return { output: `${cmd}: ${target}: Es un directorio`, status: 'error' };
+        if (!canAccess(node, 'r', isSudo)) return { output: `${cmd}: ${target}: Permiso denegado`, status: 'error' };
+        lines.push(`${hashOf(node.content || '')}  ${target}`);
       }
-      const hash = computeDeterministicHash(
-        `${node.name}:${node.content || ''}`
-      );
-      const finalHash = cmd === 'md5sum' ? hash.slice(0, 32) : hash;
-      return {
-        output: `${finalHash}  ${target}`,
-        status: 'success',
-      };
+      return { output: lines.join('\n'), status: 'success' };
     }
 
     case 'mkdir': {
+      const withParents = args.includes('-p');
       const dirTargets = args.filter((a) => !a.startsWith('-'));
       if (dirTargets.length === 0) {
         return { output: 'mkdir: falta un operando', status: 'error' };
       }
       for (const rawTarget of dirTargets) {
         const abs = resolveLinuxPath(state.bashCwd, rawTarget);
+        const existing = getLinuxNodeByPath(state.bashRoot, abs);
+        if (existing) {
+          if (withParents && existing.type === 'dir') continue;
+          return { output: `mkdir: no se puede crear el directorio «${rawTarget}»: El archivo ya existe`, status: 'error' };
+        }
         const parts = abs.split('/').filter(Boolean);
         let curr = state.bashRoot;
-        for (const p of parts) {
+        for (let i = 0; i < parts.length; i++) {
+          const p = parts[i];
           if (!curr.children) curr.children = {};
           if (!curr.children[p]) {
+            if (i < parts.length - 1 && !withParents) {
+              return { output: `mkdir: no se puede crear el directorio «${rawTarget}»: No existe el archivo o el directorio (usa mkdir -p)`, status: 'error' };
+            }
+            if (!canAccess(curr, 'w', isSudo)) {
+              return { output: `mkdir: no se puede crear el directorio «${rawTarget}»: Permiso denegado`, status: 'error' };
+            }
             curr.children[p] = {
               name: p,
               type: 'dir',
@@ -1190,324 +1276,417 @@ function runBashAtomic(
               acl: '',
               children: {},
             };
+          } else if (curr.children[p].type !== 'dir') {
+            return { output: `mkdir: no se puede crear el directorio «${rawTarget}»: No es un directorio`, status: 'error' };
           }
           curr = curr.children[p];
         }
       }
-      return {
-        output: `Directorio creado correctamente: ${dirTargets.join(', ')}`,
-        status: 'success',
-      };
+      return { output: '', status: 'success' };
     }
 
     case 'touch': {
       const fileTargets = args.filter((a) => !a.startsWith('-'));
       if (fileTargets.length === 0) {
-        return {
-          output: 'touch: falta un operando de archivo',
-          status: 'error',
-        };
+        return { output: 'touch: falta un operando de archivo', status: 'error' };
       }
       for (const t of fileTargets) {
         const abs = resolveLinuxPath(state.bashCwd, t);
-        writeLinuxFile(state.bashRoot, abs, '', true);
+        const existing = getLinuxNodeByPath(state.bashRoot, abs);
+        if (existing) {
+          // touch sobre algo que ya existe solo actualiza la fecha: no cambia el contenido
+          if (!canAccess(existing, 'w', isSudo) && !isOwner(existing)) {
+            return { output: `touch: no se puede efectuar 'touch' sobre '${t}': Permiso denegado`, status: 'error' };
+          }
+          existing.updatedAt = '2026-11-01 08:30';
+          continue;
+        }
+        const denied = linuxWriteDenied(state.bashRoot, abs, isSudo);
+        if (denied) return { output: `touch: no se puede efectuar 'touch' sobre '${t}': ${denied}`, status: 'error' };
+        writeLinuxFile(state.bashRoot, abs, '', false);
       }
       return { output: '', status: 'success' };
     }
 
-    case 'cp': {
-      const cleanArgs = args.filter((a) => !a.startsWith('-'));
-      if (cleanArgs.length < 2) {
-        return {
-          output: 'cp: falta el operando de archivo de destino',
-          status: 'error',
-        };
-      }
-      const srcPath = resolveLinuxPath(state.bashCwd, cleanArgs[0]);
-      const destRaw = cleanArgs[1];
-      const destPath = resolveLinuxPath(state.bashCwd, destRaw);
-      const srcNode = getLinuxNodeByPath(state.bashRoot, srcPath);
-      if (!srcNode) {
-        return {
-          output: `cp: no se puede efectuar 'stat' sobre '${cleanArgs[0]}': No existe el archivo o el directorio`,
-          status: 'error',
-        };
-      }
-      const destNode = getLinuxNodeByPath(state.bashRoot, destPath);
-      const finalDestPath =
-        destNode && destNode.type === 'dir'
-          ? `${destPath.replace(/\/$/, '')}/${srcNode.name}`
-          : destPath;
-
-      writeLinuxFile(
-        state.bashRoot,
-        finalDestPath,
-        srcNode.content || '',
-        false
-      );
-      return {
-        output: `'${cleanArgs[0]}' -> '${finalDestPath}'`,
-        status: 'success',
-      };
-    }
-
+    case 'cp':
     case 'mv': {
+      const recursive = args.some((a) => /^-[a-zA-Z]*[rRa]/.test(a));
       const cleanArgs = args.filter((a) => !a.startsWith('-'));
       if (cleanArgs.length < 2) {
-        return {
-          output: 'mv: falta el operando de archivo de destino',
-          status: 'error',
-        };
+        return { output: `${cmd}: falta el operando de archivo de destino`, status: 'error' };
       }
       const srcPath = resolveLinuxPath(state.bashCwd, cleanArgs[0]);
-      const destPath = resolveLinuxPath(state.bashCwd, cleanArgs[1]);
       const srcNode = getLinuxNodeByPath(state.bashRoot, srcPath);
       if (!srcNode) {
-        return {
-          output: `mv: no se puede efectuar 'stat' sobre '${cleanArgs[0]}': No existe el archivo`,
-          status: 'error',
-        };
+        return { output: `${cmd}: no se puede efectuar 'stat' sobre '${cleanArgs[0]}': No existe el archivo o el directorio`, status: 'error' };
       }
+      if (cmd === 'cp' && srcNode.type === 'dir' && !recursive) {
+        return { output: `cp: -r no especificado; se omite el directorio '${cleanArgs[0]}'`, status: 'error' };
+      }
+      if (cmd === 'cp' && srcNode.type === 'file' && !canAccess(srcNode, 'r', isSudo)) {
+        return { output: `cp: no se puede abrir '${cleanArgs[0]}' para lectura: Permiso denegado`, status: 'error' };
+      }
+      const destPath = resolveLinuxPath(state.bashCwd, cleanArgs[1]);
       const destNode = getLinuxNodeByPath(state.bashRoot, destPath);
       const finalDestPath =
-        destNode && destNode.type === 'dir'
-          ? `${destPath.replace(/\/$/, '')}/${srcNode.name}`
-          : destPath;
-
-      writeLinuxFile(
-        state.bashRoot,
-        finalDestPath,
-        srcNode.content || '',
-        false
-      );
-
-      const srcParts = srcPath.split('/').filter(Boolean);
-      const srcName = srcParts.pop()!;
-      const srcParent = getLinuxNodeByPath(
-        state.bashRoot,
-        '/' + srcParts.join('/')
-      );
-      if (srcParent?.children) {
-        delete srcParent.children[srcName];
+        destNode && destNode.type === 'dir' ? `${destPath.replace(/\/$/, '')}/${srcNode.name}` : destPath;
+      if (finalDestPath === srcPath || finalDestPath.startsWith(srcPath + '/')) {
+        return { output: `${cmd}: no se puede ${cmd === 'cp' ? 'copiar' : 'mover'} '${cleanArgs[0]}' a un subdirectorio de sí mismo`, status: 'error' };
       }
-      return {
-        output: `Movido '${cleanArgs[0]}' -> '${finalDestPath}'`,
-        status: 'success',
-      };
+      const existingDest = getLinuxNodeByPath(state.bashRoot, finalDestPath);
+      if (existingDest?.type === 'dir' && srcNode.type === 'file') {
+        return { output: `${cmd}: no se puede sobrescribir el directorio '${finalDestPath}' con un no directorio`, status: 'error' };
+      }
+      const denied = existingDest && srcNode.type === 'file'
+        ? linuxWriteDenied(state.bashRoot, finalDestPath, isSudo)
+        : (() => {
+            const dir = getLinuxNodeByPath(state.bashRoot, parentPath(finalDestPath));
+            if (!dir || dir.type !== 'dir') return 'No existe el archivo o el directorio';
+            return canAccess(dir, 'w', isSudo) ? null : 'Permiso denegado';
+          })();
+      if (denied) {
+        return { output: `${cmd}: no se puede crear '${cleanArgs[1]}': ${denied}`, status: 'error' };
+      }
+      if (cmd === 'mv') {
+        const srcParent = getLinuxNodeByPath(state.bashRoot, parentPath(srcPath));
+        if (!srcParent || !canAccess(srcParent, 'w', isSudo)) {
+          return { output: `mv: no se puede mover '${cleanArgs[0]}': Permiso denegado`, status: 'error' };
+        }
+      }
+      // Copia profunda del nodo (ficheros y carpetas con todo su contenido)
+      const copy: VFSNode = JSON.parse(JSON.stringify(srcNode));
+      const destName = finalDestPath.split('/').filter(Boolean).pop()!;
+      copy.name = destName;
+      if (cmd === 'cp') {
+        copy.owner = isSudo ? 'root:root' : `${BASH_USER}:${BASH_USER}`;
+        copy.updatedAt = '2026-11-01 08:30';
+        if (existingDest && existingDest.type === 'file') {
+          copy.permissions = existingDest.permissions;
+          copy.octal = existingDest.octal;
+          copy.owner = existingDest.owner;
+        }
+      }
+      const destDir = getLinuxNodeByPath(state.bashRoot, parentPath(finalDestPath))!;
+      if (!destDir.children) destDir.children = {};
+      destDir.children[destName] = copy;
+      if (cmd === 'mv') {
+        const srcParent = getLinuxNodeByPath(state.bashRoot, parentPath(srcPath))!;
+        const srcName = srcPath.split('/').filter(Boolean).pop()!;
+        if (srcParent.children && srcParent.children[srcName] === srcNode) delete srcParent.children[srcName];
+      }
+      return { output: '', status: 'success' };
     }
 
     case 'rm': {
+      const recursive = args.some((a) => /^-[a-zA-Z]*[rR]/.test(a));
+      const force = args.some((a) => /^-[a-zA-Z]*f/.test(a));
       const targets = args.filter((a) => !a.startsWith('-'));
       if (targets.length === 0) {
         return { output: 'rm: falta un operando', status: 'error' };
       }
       for (const t of targets) {
         const abs = resolveLinuxPath(state.bashCwd, t);
-        if (abs === '/' || abs === '/home' || abs === '/etc') {
-          return {
-            output: `rm: bloqueado por el Sandbox de Seguridad: no se permite eliminar el directorio crítico ${abs}`,
-            status: 'error',
-          };
+        if (abs === '/' || abs === '/home' || abs === '/etc' || abs === '/var') {
+          return { output: `rm: bloqueado por el Sandbox de Seguridad: no se permite eliminar el directorio crítico ${abs}`, status: 'error' };
         }
-        const parts = abs.split('/').filter(Boolean);
-        const name = parts.pop()!;
-        const parent = getLinuxNodeByPath(
-          state.bashRoot,
-          '/' + parts.join('/')
-        );
-        if (!parent?.children || !parent.children[name]) {
-          return {
-            output: `rm: no se puede borrar '${t}': No existe el archivo o el directorio`,
-            status: 'error',
-          };
+        const name = abs.split('/').filter(Boolean).pop()!;
+        const parent = getLinuxNodeByPath(state.bashRoot, parentPath(abs));
+        const node = parent?.children?.[name];
+        if (!parent || !node) {
+          if (force) continue;
+          return { output: `rm: no se puede borrar '${t}': No existe el archivo o el directorio`, status: 'error' };
         }
-        delete parent.children[name];
+        if (node.type === 'dir' && !recursive) {
+          return { output: `rm: no se puede borrar '${t}': Es un directorio (usa rm -r)`, status: 'error' };
+        }
+        // Borrar depende del permiso de escritura en el directorio que lo contiene, no del fichero
+        if (!canAccess(parent, 'w', isSudo)) {
+          return { output: `rm: no se puede borrar '${t}': Permiso denegado`, status: 'error' };
+        }
+        delete parent.children![name];
       }
-      return {
-        output: `Eliminado: ${targets.join(', ')}`,
-        status: 'success',
-      };
+      return { output: '', status: 'success' };
     }
 
     case 'cat':
     case 'head':
     case 'tail': {
-      let text = stdin;
-      const fileArg = args.find((a) => !a.startsWith('-'));
-      if (fileArg) {
-        const abs = resolveLinuxPath(state.bashCwd, fileArg);
-        const node = getLinuxNodeByPath(state.bashRoot, abs);
-        if (!node) {
-          return {
-            output: `${cmd}: ${fileArg}: No existe el archivo o el directorio`,
-            status: 'error',
-          };
+      let count = 10;
+      const fileArgs: string[] = [];
+      for (let i = 0; i < args.length; i++) {
+        const a = args[i];
+        if (a === '-n' && args[i + 1]) {
+          count = parseInt(args[++i], 10);
+        } else if (/^-n\d+$/.test(a) || /^-\d+$/.test(a)) {
+          count = parseInt(a.replace(/^-n?/, ''), 10);
+        } else if (!a.startsWith('-')) {
+          fileArgs.push(a);
         }
-        if (node.type === 'dir') {
-          return {
-            output: `${cmd}: ${fileArg}: Es un directorio`,
-            status: 'error',
-          };
-        }
-        text = node.content || '';
       }
+      const texts: string[] = [];
+      for (const fileArg of fileArgs) {
+        const node = getLinuxNodeByPath(state.bashRoot, resolveLinuxPath(state.bashCwd, fileArg));
+        if (!node) return { output: `${cmd}: ${fileArg}: No existe el archivo o el directorio`, status: 'error' };
+        if (node.type === 'dir') return { output: `${cmd}: ${fileArg}: Es un directorio`, status: 'error' };
+        if (!canAccess(node, 'r', isSudo)) return { output: `${cmd}: ${fileArg}: Permiso denegado`, status: 'error' };
+        texts.push(node.content || '');
+      }
+      const text = fileArgs.length ? texts.join('\n') : stdin;
       if (text === null) {
-        return {
-          output: `${cmd}: falta el nombre del archivo`,
-          status: 'error',
-        };
+        return { output: `${cmd}: falta el nombre del archivo`, status: 'error' };
+      }
+      if (Number.isNaN(count) || count < 0) {
+        return { output: `${cmd}: número de líneas no válido`, status: 'error' };
       }
       const lines = text.split('\n');
-      if (cmd === 'head') return { output: lines.slice(0, 5).join('\n'), status: 'success' };
-      if (cmd === 'tail') return { output: lines.slice(-5).join('\n'), status: 'success' };
+      if (cmd === 'head') return { output: lines.slice(0, count).join('\n'), status: 'success' };
+      if (cmd === 'tail') return { output: count === 0 ? '' : lines.slice(-count).join('\n'), status: 'success' };
       return { output: text, status: 'success' };
     }
 
     case 'wc': {
-      const content = stdin ?? '';
+      const flags = args.filter((a) => a.startsWith('-')).join('');
+      const fileArg = args.find((a) => !a.startsWith('-'));
+      let content = stdin ?? '';
+      if (fileArg) {
+        const node = getLinuxNodeByPath(state.bashRoot, resolveLinuxPath(state.bashCwd, fileArg));
+        if (!node || node.type === 'dir') return { output: `wc: ${fileArg}: No existe el archivo o es un directorio`, status: 'error' };
+        if (!canAccess(node, 'r', isSudo)) return { output: `wc: ${fileArg}: Permiso denegado`, status: 'error' };
+        content = node.content || '';
+      } else if (stdin === null) {
+        return { output: 'wc: esperando entrada por tubería (|) o un fichero', status: 'error' };
+      }
+      // Los ficheros del simulador se guardan sin el salto de línea final: se cuenta como si lo tuvieran
       const lineCount = content ? content.split('\n').length : 0;
-      return { output: `${lineCount}`, status: 'success' };
+      const wordCount = content.split(/\s+/).filter(Boolean).length;
+      const byteCount = content ? utf8Length(content) + 1 : 0;
+      const parts: number[] = [];
+      if (!flags || flags.includes('l')) parts.push(lineCount);
+      if (!flags || flags.includes('w')) parts.push(wordCount);
+      if (!flags || flags.includes('c')) parts.push(byteCount);
+      return { output: `${parts.join(' ')}${fileArg ? ` ${fileArg}` : ''}`, status: 'success' };
     }
 
     case 'find': {
-      const dirNode = getLinuxNodeByPath(state.bashRoot, state.bashCwd);
-      const list = Object.keys(dirNode?.children || {}).map(
-        (k) => `${state.bashCwd}/${k}`
-      );
-      return { output: list.join('\n'), status: 'success' };
+      const startArg = args[0] && !args[0].startsWith('-') ? args[0] : '.';
+      const nameIdx = args.indexOf('-name');
+      const typeIdx = args.indexOf('-type');
+      const namePattern = nameIdx !== -1 ? args[nameIdx + 1] : null;
+      const typeFilter = typeIdx !== -1 ? args[typeIdx + 1] : null;
+      const startAbs = resolveLinuxPath(state.bashCwd, startArg);
+      const startNode = getLinuxNodeByPath(state.bashRoot, startAbs);
+      if (!startNode) return { output: `find: '${startArg}': No existe el archivo o el directorio`, status: 'error' };
+      const regex = namePattern
+        ? new RegExp('^' + namePattern.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.') + '$')
+        : null;
+      const found: string[] = [];
+      const walk = (node: VFSNode, shown: string) => {
+        const matchesType = !typeFilter || (typeFilter === 'd' ? node.type === 'dir' : node.type === 'file');
+        if (matchesType && (!regex || regex.test(node.name))) found.push(shown);
+        if (node.type === 'dir') {
+          for (const child of Object.values(node.children || {})) {
+            walk(child, `${shown.replace(/\/$/, '')}/${child.name}`);
+          }
+        }
+      };
+      walk(startNode, startArg);
+      return { output: found.join('\n'), status: 'success' };
+    }
+
+    case 'tee': {
+      const append = args.includes('-a');
+      const targets = args.filter((a) => !a.startsWith('-'));
+      const text = stdin ?? '';
+      for (const t of targets) {
+        const abs = resolveLinuxPath(state.bashCwd, t);
+        const denied = linuxWriteDenied(state.bashRoot, abs, isSudo);
+        if (denied) return { output: `tee: ${t}: ${denied}`, status: 'error' };
+        writeLinuxFile(state.bashRoot, abs, text, append);
+      }
+      return { output: text, status: 'success' };
     }
 
     case 'echo':
       return { output: args.join(' '), status: 'success' };
 
     case 'grep': {
+      const flags = args.filter((a) => a.startsWith('-')).join('');
       const cleanArgs = args.filter((a) => !a.startsWith('-'));
-      const ignoreCase = args.some((a) => a.includes('i'));
+      const ignoreCase = flags.includes('i');
+      const invert = flags.includes('v');
+      const numbered = flags.includes('n');
+      const countOnly = flags.includes('c');
       const pattern = cleanArgs[0];
       if (!pattern) {
-        return {
-          output: 'Uso: grep [OPCIONES] PATRÓN [ARCHIVO]',
-          status: 'error',
-        };
+        return { output: 'Uso: grep [OPCIONES] PATRÓN [ARCHIVO]', status: 'error' };
       }
       let sourceText = stdin;
       if (cleanArgs[1]) {
-        const abs = resolveLinuxPath(state.bashCwd, cleanArgs[1]);
-        const node = getLinuxNodeByPath(state.bashRoot, abs);
-        if (!node || node.type === 'dir') {
-          return {
-            output: `grep: ${cleanArgs[1]}: No existe el archivo`,
-            status: 'error',
-          };
-        }
+        const node = getLinuxNodeByPath(state.bashRoot, resolveLinuxPath(state.bashCwd, cleanArgs[1]));
+        if (!node) return { output: `grep: ${cleanArgs[1]}: No existe el archivo o el directorio`, status: 'error' };
+        if (node.type === 'dir') return { output: `grep: ${cleanArgs[1]}: Es un directorio`, status: 'error' };
+        if (!canAccess(node, 'r', isSudo)) return { output: `grep: ${cleanArgs[1]}: Permiso denegado`, status: 'error' };
         sourceText = node.content || '';
       }
       if (sourceText === null) {
-        return {
-          output: 'grep: esperando entrada por tubería (|) o ruta de archivo',
-          status: 'error',
-        };
+        return { output: 'grep: esperando entrada por tubería (|) o ruta de archivo', status: 'error' };
       }
+      const matches = (line: string) =>
+        ignoreCase ? line.toLowerCase().includes(pattern.toLowerCase()) : line.includes(pattern);
       const matched = sourceText
         .split('\n')
-        .filter((line) =>
-          ignoreCase
-            ? line.toLowerCase().includes(pattern.toLowerCase())
-            : line.includes(pattern)
-        );
-      return { output: matched.join('\n'), status: 'success' };
+        .map((line, i) => ({ line, n: i + 1 }))
+        .filter(({ line }) => matches(line) !== invert);
+      if (countOnly) return { output: String(matched.length), status: 'success' };
+      // Como grep real: sin coincidencias devuelve código 1 (no es un error de sintaxis)
+      return {
+        output: matched.map(({ line, n }) => (numbered ? `${n}:${line}` : line)).join('\n'),
+        status: matched.length ? 'success' : 'warning',
+      };
     }
 
     case 'chmod': {
-      const cleanArgs = args.filter((a) => !a.startsWith('-'));
+      const cleanArgs = args.filter((a) => !/^-[a-zA-Z]+$/.test(a));
       if (cleanArgs.length < 2) {
-        return {
-          output: 'chmod: faltan operandos. Uso: chmod <modo_octal> <archivo>',
-          status: 'error',
-        };
+        return { output: 'chmod: faltan operandos. Uso: chmod <modo> <archivo> (ej. 600, 755, u+x, go-rwx)', status: 'error' };
       }
       const mode = cleanArgs[0];
       const fileArg = cleanArgs[1];
-      const abs = resolveLinuxPath(state.bashCwd, fileArg);
-      const node = getLinuxNodeByPath(state.bashRoot, abs);
+      const node = getLinuxNodeByPath(state.bashRoot, resolveLinuxPath(state.bashCwd, fileArg));
       if (!node) {
-        return {
-          output: `chmod: no se puede acceder a '${fileArg}': No existe el archivo`,
-          status: 'error',
-        };
+        return { output: `chmod: no se puede acceder a '${fileArg}': No existe el archivo o el directorio`, status: 'error' };
       }
+      // Solo el propietario o root pueden cambiar los permisos
+      if (!isSudo && !isOwner(node)) {
+        return { output: `chmod: cambiando los permisos de '${fileArg}': Operación no permitida`, status: 'error' };
+      }
+      const bits = node.permissions.split('');
       if (/^[0-7]{3,4}$/.test(mode)) {
         const normalized = mode.length === 4 ? mode.slice(1) : mode;
         node.octal = normalized;
         node.permissions = octalToSymbolic(normalized);
-      } else if (mode === '+x' || mode === 'u+x') {
-        node.octal = '755';
-        node.permissions = 'rwxr-xr-x';
+      } else if (/^([ugoa]*[+\-=][rwx]*)(,[ugoa]*[+\-=][rwx]*)*$/.test(mode)) {
+        for (const clause of mode.split(',')) {
+          const m = clause.match(/^([ugoa]*)([+\-=])([rwx]*)$/)!;
+          const who = (m[1] || 'a').replace('a', 'ugo');
+          for (const w of who) {
+            const base = w === 'u' ? 0 : w === 'g' ? 3 : 6;
+            (['r', 'w', 'x'] as const).forEach((perm, i) => {
+              const has = m[3].includes(perm);
+              if (m[2] === '+' && has) bits[base + i] = perm;
+              if (m[2] === '-' && has) bits[base + i] = '-';
+              if (m[2] === '=') bits[base + i] = has ? perm : '-';
+            });
+          }
+        }
+        node.permissions = bits.join('');
+        node.octal = [0, 3, 6]
+          .map((b) => (bits[b] === 'r' ? 4 : 0) + (bits[b + 1] === 'w' ? 2 : 0) + (bits[b + 2] === 'x' ? 1 : 0))
+          .join('');
       } else {
-        return {
-          output: `chmod: modo inválido: '${mode}' (usa formato octal de 3 dígitos como 600, 644, 750, 755)`,
-          status: 'error',
-        };
+        return { output: `chmod: modo inválido: «${mode}» (usa octal como 600/755 o simbólico como u+x, go-rwx)`, status: 'error' };
       }
-      return {
-        output: `Permisos de '${fileArg}' actualizados a ${node.octal} (${node.permissions})`,
-        status: 'success',
-      };
+      return { output: '', status: 'success' };
     }
 
     case 'chown': {
       const cleanArgs = args.filter((a) => !a.startsWith('-'));
       if (cleanArgs.length < 2) {
-        return {
-          output:
-            'chown: faltan operandos. Uso: sudo chown usuario:grupo <archivo>',
-          status: 'error',
-        };
+        return { output: 'chown: faltan operandos. Uso: sudo chown usuario:grupo <archivo>', status: 'error' };
       }
       const newOwner = cleanArgs[0];
       const fileArg = cleanArgs[1];
-      const abs = resolveLinuxPath(state.bashCwd, fileArg);
-      const node = getLinuxNodeByPath(state.bashRoot, abs);
+      const node = getLinuxNodeByPath(state.bashRoot, resolveLinuxPath(state.bashCwd, fileArg));
       if (!node) {
-        return {
-          output: `chown: no se puede acceder a '${fileArg}': No existe el archivo`,
-          status: 'error',
-        };
+        return { output: `chown: no se puede acceder a '${fileArg}': No existe el archivo o el directorio`, status: 'error' };
       }
-      node.owner = newOwner.includes(':')
-        ? newOwner
-        : `${newOwner}:${newOwner}`;
-      return {
-        output: `Propietario de '${fileArg}' cambiado a ${node.owner}`,
-        status: 'success',
-      };
+      // Cambiar el propietario de un fichero solo puede hacerlo root
+      if (!isSudo) {
+        return { output: `chown: cambiando el propietario de '${fileArg}': Operación no permitida (necesitas sudo)`, status: 'error' };
+      }
+      const [u, g] = newOwner.split(':');
+      const currentGroup = node.owner.split(':')[1] || node.owner;
+      node.owner = `${u || node.owner.split(':')[0]}:${g === undefined ? currentGroup : g || u}`;
+      return { output: '', status: 'success' };
     }
 
-    case 'lsblk':
-    case 'df': {
+    case 'lsblk': {
       const lines = [
-        'FILESYSTEM      SIZE   USED          MOUNTPOINT   STATUS',
+        'NAME     MAJ:MIN  SIZE  TYPE  MOUNTPOINTS   ESTADO (simulador)',
         ...state.bashDisks.map(
-          (d) =>
-            `${d.id.padEnd(15)} ${d.size.padEnd(6)} ${d.used.padEnd(13)} ${d.mount.padEnd(12)} ${d.status}`
+          (d, i) =>
+            `${d.id.replace('/dev/', '').padEnd(8)} 8:${String(i * 16 + 1).padEnd(5)} ${d.size.padStart(4)}  part  ${(d.mounted !== false ? d.mount : '').padEnd(13)} ${d.status}`
         ),
       ];
       return { output: lines.join('\n'), status: 'success' };
     }
 
+    case 'df': {
+      const mounted = state.bashDisks.filter((d) => d.mounted !== false);
+      const lines = [
+        'S.ficheros     Tamaño  Usados        Montado en   Estado (simulador)',
+        ...mounted.map(
+          (d) => `${d.id.padEnd(14)} ${d.size.padStart(6)}  ${d.used.padEnd(13)} ${d.mount.padEnd(12)} ${d.status}`
+        ),
+      ];
+      return { output: lines.join('\n'), status: 'success' };
+    }
+
+    case 'umount': {
+      if (!isSudo) return { output: 'umount: solo root puede desmontar (usa sudo umount)', status: 'error' };
+      const target = args.find((a) => !a.startsWith('-'));
+      const disk = state.bashDisks.find((d) => d.id === target || d.mount === target);
+      if (!disk) return { output: `umount: ${target ?? ''}: no montado`, status: 'error' };
+      if (disk.mount === '/') return { output: `umount: /: el objetivo está ocupado (es la raíz del sistema en uso)`, status: 'error' };
+      if (disk.mounted === false) return { output: `umount: ${disk.mount}: no montado`, status: 'error' };
+      if (state.bashCwd === disk.mount || state.bashCwd.startsWith(disk.mount + '/')) {
+        return { output: `umount: ${disk.mount}: el objetivo está ocupado (sal del directorio con cd ~)`, status: 'error' };
+      }
+      disk.mounted = false;
+      return { output: '', status: 'success' };
+    }
+
+    case 'mount': {
+      const positional = args.filter((a) => !a.startsWith('-'));
+      if (positional.length === 0 && !args.includes('-a')) {
+        return {
+          output: state.bashDisks
+            .filter((d) => d.mounted !== false)
+            .map((d) => `${d.id} on ${d.mount} type ${d.fsType} (rw,relatime)`)
+            .join('\n'),
+          status: 'success',
+        };
+      }
+      if (!isSudo) return { output: 'mount: solo root puede montar (usa sudo mount)', status: 'error' };
+      const targets = args.includes('-a')
+        ? state.bashDisks.filter((d) => d.mounted === false)
+        : state.bashDisks.filter((d) => positional.includes(d.id) || positional.includes(d.mount));
+      if (targets.length === 0 && !args.includes('-a')) {
+        return { output: `mount: ${positional[0]}: no se encuentra en /etc/fstab`, status: 'error' };
+      }
+      for (const d of targets) d.mounted = true;
+      return { output: '', status: 'success' };
+    }
+
     case 'fsck': {
-      const targetDisk =
-        args.find((a) => a.startsWith('/dev/')) || '/dev/sdb1';
+      const targetDisk = args.find((a) => a.startsWith('/dev/')) || '/dev/sdb1';
       const disk = state.bashDisks.find((d) => d.id === targetDisk);
       if (!disk) {
+        return { output: `fsck from util-linux 2.39.3\nfsck: no se encuentra el dispositivo de bloques ${targetDisk}`, status: 'error' };
+      }
+      if (!isSudo) {
+        return { output: `fsck from util-linux 2.39.3\ne2fsck 1.47.0 (5-Feb-2023)\nfsck.ext4: Permiso denegado al intentar abrir ${targetDisk} (necesitas sudo)`, status: 'error' };
+      }
+      // Reparar un sistema de ficheros montado puede corromperlo: e2fsck se niega
+      if (disk.mounted !== false) {
         return {
-          output: `fsck from util-linux 2.39.3\nfsck: no se encuentra el dispositivo de bloques ${targetDisk}`,
+          output: `fsck from util-linux 2.39.3\ne2fsck 1.47.0 (5-Feb-2023)\n${targetDisk} está montado.\ne2fsck: No se puede continuar, abortando.\n[Desmonta primero el volumen: sudo umount ${disk.mount === '/' ? targetDisk : disk.mount}${disk.mount === '/' ? ' — la raíz se comprueba al arrancar' : ''}]`,
           status: 'error',
         };
       }
-      if (!isSudo && !args.includes('-y')) {
+      if (!args.some((a) => /^-[a-zA-Z]*[yp]/.test(a))) {
         return {
-          output: `fsck from util-linux 2.39.3\n[AVISO] Para reparar inodos dañados en ${targetDisk} ejecuta: sudo fsck -y ${targetDisk}`,
+          output: `fsck from util-linux 2.39.3\ne2fsck 1.47.0 (5-Feb-2023)\n${targetDisk} contiene un sistema de ficheros con errores, comprobación forzada.\nInodo 18421: referencia a inodo borrado. ¿Corregir? sí\n[Sin -y, e2fsck pregunta antes de cada corrección. Usa sudo fsck -y ${targetDisk} para aceptarlas todas]`,
           status: 'warning',
         };
       }
@@ -1518,15 +1697,17 @@ function runBashAtomic(
         output: [
           `fsck from util-linux 2.39.3`,
           `e2fsck 1.47.0 (5-Feb-2023)`,
-          `${targetDisk}: recovering journal`,
-          `Paso 1: Verificando inodos, bloques y tamaños...`,
-          `  Inodo huérfano 18421 detectado en superbloque -> CORREGIDO (-y)`,
-          `Paso 2: Verificando estructura de directorios...`,
-          `Paso 3: Verificando conectividad de directorios...`,
-          `Paso 4: Verificando contadores de referencia...`,
-          `Paso 5: Verificando resumen de mapa de bits de bloques (bloque 99214)... REASIGNADO`,
-          `${targetDisk}: ***** EL SISTEMA DE FICHEROS FUE MODIFICADO Y SANEADO *****`,
-          `${targetDisk}: 41.290/16.384.000 ficheros (0.1% no contiguos), 142G/250G bloques [HEALTHY]`,
+          `${targetDisk}: recuperando el journal`,
+          `Paso 1: Verificando inodos, bloques y tamaños`,
+          `  Inodo 18421 referenciado tras borrarse. ¿Corregir? sí`,
+          `Paso 2: Verificando estructura de directorios`,
+          `Paso 3: Verificando conectividad de directorios`,
+          `Paso 4: Verificando contadores de referencia`,
+          `Paso 5: Verificando resumen de grupos`,
+          `  Diferencias en el mapa de bits de bloques: -99214. ¿Corregir? sí`,
+          `${targetDisk}: ***** EL SISTEMA DE FICHEROS FUE MODIFICADO *****`,
+          `${targetDisk}: 41290/16384000 ficheros (0.1% no contiguos), 37224448/65536000 bloques`,
+          `[Vuelve a montarlo con: sudo mount ${targetDisk}]`,
         ].join('\n'),
         status: 'success',
       };
@@ -1547,91 +1728,151 @@ function runBashAtomic(
     case 'kill': {
       const pidArg = args.find((a) => /^\d+$/.test(a));
       if (!pidArg) {
-        return {
-          output: 'kill: uso: kill [-9] <PID>',
-          status: 'error',
-        };
+        return { output: 'kill: uso: kill [-15|-9] <PID>', status: 'error' };
       }
+      const forceKill = args.some((a) => a === '-9' || a.toUpperCase() === '-KILL' || a.toUpperCase() === '-SIGKILL');
       const pid = Number(pidArg);
       const proc = state.bashProcesses.find((p) => p.pid === pid);
       if (!proc) {
-        return {
-          output: `bash: kill: (${pid}) - No existe el proceso`,
-          status: 'error',
-        };
+        return { output: `bash: kill: (${pid}) - No existe el proceso`, status: 'error' };
+      }
+      // Solo puedes enviar señales a tus propios procesos; los de otros usuarios exigen root
+      if (proc.user !== BASH_USER && !isSudo) {
+        return { output: `bash: kill: (${pid}) - Operación no permitida (pertenece a ${proc.user}; necesitas sudo)`, status: 'error' };
       }
       if (proc.critical) {
         return {
-          output: `kill: Operación bloqueada por el Sandbox: el proceso ${proc.name} (PID ${pid}) es un servicio crítico del kernel.`,
+          output: `kill: Operación bloqueada por el Sandbox: ${proc.name} (PID ${pid}) es un servicio crítico; matarlo dejaría el servidor sin ${proc.name === 'sshd' ? 'acceso remoto' : 'sistema'}.`,
+          status: 'warning',
+        };
+      }
+      // SIGTERM (la señal por defecto) se puede capturar o ignorar; SIGKILL no
+      if (!forceKill && proc.status === 'Hung / High CPU') {
+        return {
+          output: `[El proceso ${pid} (${proc.name}) sigue en ejecución: ha ignorado SIGTERM (15). Si no responde, fuerza con kill -9 ${pid}]`,
           status: 'warning',
         };
       }
       state.bashProcesses = state.bashProcesses.filter((p) => p.pid !== pid);
       return {
-        output: `[1]+  Killed (SIGKILL)        ${proc.command} (PID ${pid})`,
+        output: forceKill ? `[1]+  Terminado (killed)   ${proc.command}` : `[1]+  Terminado            ${proc.command}`,
         status: 'success',
       };
     }
 
     case 'systemctl': {
       const action = args[0] || 'status';
-      const service = args[1] || 'nginx';
-      if (action === 'restart' || action === 'start' || action === 'reload') {
-        state.bashNginxActive = true;
+      const service = (args[1] || 'nginx').replace(/\.service$/, '');
+      const changesState = ['restart', 'start', 'reload', 'stop', 'enable', 'disable'].includes(action);
+      if (changesState && !isSudo) {
         return {
-          output: `[OK] Servicio '${service}.service' reiniciado y verificado correctamente por systemd.`,
-          status: 'success',
+          output: `Failed to ${action} ${service}.service: Interactive authentication required.\nSee system logs and 'systemctl status ${service}.service' for details. (usa sudo)`,
+          status: 'error',
         };
       }
+      if (service === 'nginx' && (action === 'restart' || action === 'start' || action === 'reload')) {
+        state.bashNginxActive = true;
+        return { output: '', status: 'success' };
+      }
+      if (service === 'nginx' && action === 'stop') {
+        state.bashNginxActive = false;
+        return { output: '', status: 'success' };
+      }
+      if (changesState) return { output: '', status: 'success' };
+      const active = service !== 'nginx' || state.bashNginxActive;
       return {
         output: [
-          `● ${service}.service - Servidor de alto rendimiento ${service}`,
-          `     Loaded: loaded (/lib/systemd/system/${service}.service; enabled)`,
-          `     Active: active (running) since Sun 2026-11-01 08:00:00 UTC`,
-          `   Main PID: 1042 (${service})`,
+          `● ${service}.service - ${service === 'nginx' ? 'A high performance web server and a reverse proxy server' : service}`,
+          `     Loaded: loaded (/lib/systemd/system/${service}.service; enabled; preset: enabled)`,
+          active
+            ? `     Active: active (running) since Sun 2026-11-01 08:00:00 UTC`
+            : `     Active: inactive (dead)`,
+          ...(active ? [`   Main PID: 1042 (${service})`] : []),
         ].join('\n'),
-        status: 'success',
+        status: active ? 'success' : 'warning',
       };
     }
 
     case 'ss':
     case 'netstat': {
-      const lines = [
-        'Netid  State   Recv-Q  Send-Q  Local Address:Port   Peer Address:Port  Process',
-        'tcp    LISTEN  0       128     0.0.0.0:22           0.0.0.0:*          users:(("sshd",pid=842,fd=3))',
-        'tcp    LISTEN  0       511     0.0.0.0:80           0.0.0.0:*          users:(("nginx",pid=1042,fd=6))',
+      const flags = args.filter((a) => a.startsWith('-')).join('');
+      const listeningOnly = flags.includes('l');
+      const showProcess = flags.includes('p');
+      const sockets = [
+        { state: 'LISTEN', local: '0.0.0.0:22', peer: '0.0.0.0:*', proc: 'sshd', pid: 842 },
+        { state: 'LISTEN', local: '0.0.0.0:80', peer: '0.0.0.0:*', proc: 'nginx', pid: 1042 },
+        { state: 'ESTAB', local: '10.0.14.10:22', peer: '10.0.14.8:51922', proc: 'sshd', pid: 2190 },
       ];
       const rogue = state.bashProcesses.find((p) => p.isRogue);
       if (rogue) {
-        lines.push(
-          `tcp    ESTAB   0       0       10.0.14.10:9091      198.51.100.44:6667 users:(("${rogue.name}",pid=${rogue.pid},fd=4)) [SOSPECHOSO]`
-        );
+        sockets.push({ state: 'LISTEN', local: `0.0.0.0:${rogue.port ?? 9091}`, peer: '0.0.0.0:*', proc: rogue.name, pid: rogue.pid });
+      }
+      const visible = sockets.filter((s) => (listeningOnly ? s.state === 'LISTEN' : true));
+      const lines = [
+        'Netid  State   Recv-Q  Send-Q  Local Address:Port   Peer Address:Port  ' + (showProcess ? 'Process' : ''),
+        ...visible.map(
+          (s) =>
+            `tcp    ${s.state.padEnd(7)} 0       128     ${s.local.padEnd(20)} ${s.peer.padEnd(18)} ${
+              showProcess
+                ? isSudo || s.proc === rogue?.name
+                  ? `users:(("${s.proc}",pid=${s.pid},fd=3))`
+                  : ''
+                : ''
+            }`
+        ),
+      ];
+      if (showProcess && !isSudo) {
+        lines.push('[Sin sudo, ss -p solo muestra el proceso de los sockets que son tuyos]');
       }
       return { output: lines.join('\n'), status: 'success' };
     }
 
     case 'ufw': {
+      if (!isSudo) {
+        return { output: 'ERROR: Necesitas ser root para ejecutar este script (usa sudo ufw ...)', status: 'error' };
+      }
       const sub = (args[0] || 'status').toLowerCase();
+      const ruleArg = args[1];
+      const normalizeRule = (r: string) => {
+        const named: Record<string, string> = { openssh: '22/tcp', ssh: '22/tcp', http: '80/tcp', https: '443/tcp', 'nginx full': '80,443/tcp' };
+        const key = r.toLowerCase();
+        return named[key] ?? r;
+      };
+      if ((sub === 'allow' || sub === 'deny') && ruleArg) {
+        const target = normalizeRule(args.slice(1).join(' '));
+        const rule = `${target} ${sub === 'allow' ? 'ALLOW' : 'DENY'}`;
+        state.bashFirewallRules = [...state.bashFirewallRules.filter((r) => !r.startsWith(`${target} `)), rule];
+        return { output: 'Rules updated\nRules updated (v6)', status: 'success' };
+      }
       if (sub === 'enable') {
         state.bashFirewallEnabled = true;
+        const sshAllowed = state.bashFirewallRules.some((r) => /^(22|22\/tcp)\s+ALLOW$/.test(r));
         return {
-          output:
-            'Firewall is active and enabled on system startup\nReglas aplicadas: ALLOW 22/tcp (OpenSSH), ALLOW 80/tcp (Nginx), DENY INCOMING default.',
-          status: 'success',
+          output: sshAllowed
+            ? 'Command may disrupt existing ssh connections. Proceed with operation (y|n)? y\nFirewall is active and enabled on system startup'
+            : 'Command may disrupt existing ssh connections. Proceed with operation (y|n)? y\nFirewall is active and enabled on system startup\n[¡CUIDADO! No hay regla para SSH (22/tcp): la política por defecto bloquea las conexiones entrantes y en un servidor remoto perderías el acceso. Antes de activar: sudo ufw allow OpenSSH]',
+          status: sshAllowed ? 'success' : 'warning',
         };
       }
       if (sub === 'disable') {
         state.bashFirewallEnabled = false;
-        return {
-          output: 'Firewall stopped and disabled on system startup',
-          status: 'warning',
-        };
+        return { output: 'Firewall stopped and disabled on system startup', status: 'warning' };
+      }
+      if (!state.bashFirewallEnabled) {
+        return { output: 'Status: inactive', status: 'warning' };
       }
       return {
-        output: state.bashFirewallEnabled
-          ? 'Estado: activo\nHacia                      Acción      Desde\n-----                      ------      -----\n22/tcp                     ALLOW       Anywhere\n80/tcp                     ALLOW       Anywhere'
-          : 'Estado: inactivo (Ejecuta "sudo ufw enable" para activar el cortafuegos)',
-        status: state.bashFirewallEnabled ? 'success' : 'warning',
+        output: [
+          'Status: active',
+          '',
+          'To                         Action      From',
+          '--                         ------      ----',
+          ...state.bashFirewallRules.map((r) => {
+            const [to, action] = r.split(/\s+(?=ALLOW$|DENY$)/);
+            return `${to.padEnd(26)} ${action.padEnd(11)} Anywhere`;
+          }),
+        ].join('\n'),
+        status: 'success',
       };
     }
 
@@ -1720,14 +1961,14 @@ function runCmdAtomic(
       return {
         output: [
           'Comandos disponibles en Windows CMD / PowerShell (CLI Sandbox):',
-          '  Directorios y Ficheros : dir [/a], Get-ChildItem [-Force], cd, mkdir, copy, move, del, type, Get-Content, tree',
+          '  Directorios y Ficheros : dir [/a], Get-ChildItem [-Force], cd, mkdir, copy, move, del [/f], rmdir [/s /q], Remove-Item [-Recurse], type, Get-Content, tree',
           '  Atributos y Permisos   : attrib [+/-r] [+/-h] [+/-s] <f>, icacls <f> /grant Administrador:(F)',
-          '  Integridad Criptográf. : certutil -hashfile <f> SHA256, Get-FileHash <f>',
+          '  Integridad Criptográf. : certutil -hashfile <f> SHA256|MD5, Get-FileHash <f> [-Algorithm MD5]',
           '  Discos y Volúmenes     : chkdsk D:, chkdsk D: /f /r, wmic logicaldisk, Get-Volume, Repair-Volume -DriveLetter D -SpotFix',
           '  Integridad de Sistema  : dism /online /cleanup-image /restorehealth, sfc /scannow, systeminfo',
           '  Gestión de Procesos    : tasklist, Get-Process, taskkill /PID <pid> /F, Stop-Process -Id <pid> -Force',
           '  Redes y DNS            : netstat -ano, ipconfig [/all | /flushdns], ping <host>',
-          '  Tuberías y Redirección : comando | findstr <texto>, comando > archivo.txt, comando >> archivo.txt',
+          '  Tuberías y Redirección : comando | findstr [/i] <texto>, comando | Select-String <texto>, comando > archivo.txt, comando >> archivo.txt',
         ].join('\n'),
         status: 'success',
       };
@@ -1856,12 +2097,29 @@ function runCmdAtomic(
           status: 'error',
         };
       }
-      const hash = computeDeterministicHash(
-        `${node.name}:${node.content || ''}`
-      );
+      const content = node.content || '';
+      if (cmd === 'get-filehash') {
+        // Get-FileHash usa SHA256 por defecto; -Algorithm MD5 también es válido
+        const algIdx = args.findIndex((a) => a.toLowerCase() === '-algorithm');
+        const alg = algIdx !== -1 ? (args[algIdx + 1] || 'SHA256').toUpperCase() : 'SHA256';
+        const hash = (alg === 'MD5' ? md5Hex(content) : sha256Hex(content)).toUpperCase();
+        return {
+          output: [
+            '',
+            'Algorithm       Hash                                                                   Path',
+            '---------       ----                                                                   ----',
+            `${alg.padEnd(15)} ${hash.padEnd(70)} ${abs}`,
+          ].join('\n'),
+          status: 'success',
+        };
+      }
+      // certutil -hashfile <archivo> [SHA256|MD5]: sin algoritmo usa SHA1, que el simulador no implementa
+      const wantsMd5 = args.some((a) => a.toUpperCase() === 'MD5');
+      const alg = wantsMd5 ? 'MD5' : 'SHA256';
+      const hash = wantsMd5 ? md5Hex(content) : sha256Hex(content);
       return {
         output: [
-          `Hash SHA256 de ${fileArg}:`,
+          `Hash ${alg} de ${fileArg}:`,
           hash,
           `CertUtil: -hashfile comando completado correctamente.`,
         ].join('\n'),
@@ -1878,6 +2136,18 @@ function runCmdAtomic(
         };
       }
       const abs = resolveWinPath(state.cmdCwd, args[0]);
+      if (getWinNodeByPath(state.cmdRoot, abs)) {
+        return {
+          output: `Ya existe el subdirectorio o el archivo ${args[0]}.`,
+          status: 'error',
+        };
+      }
+      if (!/^C:/i.test(abs)) {
+        return {
+          output: 'El sistema no puede encontrar la ruta especificada.',
+          status: 'error',
+        };
+      }
       const clean = abs.replace(/^[A-Za-z]:\\?/, '');
       const parts = clean.split('\\').filter(Boolean);
       let curr = state.cmdRoot;
@@ -1904,10 +2174,7 @@ function runCmdAtomic(
           curr = curr.children[existingKey];
         }
       }
-      return {
-        output: `Directorio creado correctamente: ${abs}`,
-        status: 'success',
-      };
+      return { output: '', status: 'success' };
     }
 
     case 'copy':
@@ -1960,8 +2227,23 @@ function runCmdAtomic(
         destNode && destNode.type === 'dir'
           ? `${destPath.replace(/\\$/, '')}\\${srcNode.name}`
           : destPath;
-      writeWinFile(state.cmdRoot, finalDest, srcNode.content || '', false);
+      const destParts = finalDest.replace(/^[A-Za-z]:\\?/, '').split('\\').filter(Boolean);
+      const destName = destParts.pop()!;
+      const destDir = getWinNodeByPath(state.cmdRoot, 'C:\\' + destParts.join('\\'));
+      if (!destDir || destDir.type !== 'dir' || !/^C:/i.test(finalDest)) {
+        return {
+          output: 'El sistema no puede encontrar la ruta especificada.',
+          status: 'error',
+        };
+      }
+      if (finalDest.toLowerCase().startsWith(srcPath.toLowerCase() + '\\')) {
+        return {
+          output: 'El proceso no tiene acceso al archivo porque está siendo utilizado por otro proceso.',
+          status: 'error',
+        };
+      }
 
+      // Se mueve el nodo completo: una carpeta conserva su contenido
       const cleanSrc = srcPath.replace(/^[A-Za-z]:\\?/, '');
       const parts = cleanSrc.split('\\').filter(Boolean);
       const srcName = parts.pop()!;
@@ -1975,8 +2257,17 @@ function runCmdAtomic(
         );
         if (key) delete parent.children[key];
       }
+      if (!destDir.children) destDir.children = {};
+      const existingKey = Object.keys(destDir.children).find(
+        (k) => k.toLowerCase() === destName.toLowerCase()
+      );
+      if (existingKey) delete destDir.children[existingKey];
+      destDir.children[destName] = { ...srcNode, name: destName };
       return {
-        output: 'Se han movido         1 archivo(s).',
+        output:
+          srcNode.type === 'dir'
+            ? 'Se han movido         1 directorio(s).'
+            : 'Se han movido         1 archivo(s).',
         status: 'success',
       };
     }
@@ -2013,11 +2304,59 @@ function runCmdAtomic(
           status: 'error',
         };
       }
+      const target = parent.children[key];
+      const isPowerShell = cmd === 'remove-item' || cmd === 'rm';
+      const recurse = args.some((a) => a.toLowerCase() === '-recurse');
+      if (target.type === 'dir' && !(isPowerShell && recurse)) {
+        return {
+          output: isPowerShell
+            ? `Remove-Item: El elemento ${targetPath} tiene elementos secundarios y no se especificó el parámetro Recurse.`
+            : `${targetPath}\\*, ¿Está seguro (S/N)? [del borra los archivos de dentro, no la carpeta: usa rmdir /s /q]`,
+          status: 'error',
+        };
+      }
+      if (target.attributes.includes('R') && !args.some((a) => a.toLowerCase() === '/f' || a.toLowerCase() === '-force')) {
+        return {
+          output: isPowerShell
+            ? `Remove-Item: No se puede quitar el elemento ${targetPath}: no tiene suficientes permisos de acceso (solo lectura; usa -Force).`
+            : `${targetPath}\nAcceso denegado. (el archivo es de solo lectura: quita el atributo con attrib -r o usa del /f)`,
+          status: 'error',
+        };
+      }
       delete parent.children[key];
-      return {
-        output: `Archivo eliminado correctamente: ${name}`,
-        status: 'success',
-      };
+      return { output: '', status: 'success' };
+    }
+
+    case 'rmdir':
+    case 'rd': {
+      const recurse = args.some((a) => a.toLowerCase() === '/s');
+      const targetArg = args.find((a) => !a.startsWith('/'));
+      if (!targetArg) {
+        return { output: 'La sintaxis del comando no es correcta.', status: 'error' };
+      }
+      const targetPath = resolveWinPath(state.cmdCwd, targetArg);
+      const node = getWinNodeByPath(state.cmdRoot, targetPath);
+      if (!node) {
+        return { output: 'El sistema no puede encontrar el archivo especificado.', status: 'error' };
+      }
+      if (node.type !== 'dir') {
+        return { output: 'El nombre del directorio no es válido.', status: 'error' };
+      }
+      if (Object.keys(node.children || {}).length > 0 && !recurse) {
+        return { output: 'El directorio no está vacío. (usa rmdir /s /q para borrarlo con su contenido)', status: 'error' };
+      }
+      if (targetPath.toLowerCase() === state.cmdCwd.toLowerCase() || state.cmdCwd.toLowerCase().startsWith(targetPath.toLowerCase() + '\\')) {
+        return { output: 'El proceso no tiene acceso al archivo porque está siendo utilizado por otro proceso.', status: 'error' };
+      }
+      const parts = targetPath.replace(/^[A-Za-z]:\\?/, '').split('\\').filter(Boolean);
+      const name = parts.pop()!;
+      const parent = getWinNodeByPath(state.cmdRoot, 'C:\\' + parts.join('\\'));
+      const key = parent?.children ? Object.keys(parent.children).find((k) => k.toLowerCase() === name.toLowerCase()) : undefined;
+      if (!parent?.children || !key || /^C:\\?(Windows|Users)?$/i.test(targetPath)) {
+        return { output: 'Acceso denegado.', status: 'error' };
+      }
+      delete parent.children[key];
+      return { output: '', status: 'success' };
     }
 
     case 'type':
@@ -2076,10 +2415,18 @@ function runCmdAtomic(
           status: 'error',
         };
       }
+      // findstr distingue mayúsculas salvo con /I; Select-String no las distingue salvo con -CaseSensitive
+      const lowerArgs = args.map((a) => a.toLowerCase());
+      const ignoreCase =
+        cmd === 'findstr' ? lowerArgs.includes('/i') : !lowerArgs.includes('-casesensitive');
+      const invert = cmd === 'findstr' && lowerArgs.includes('/v');
       const lines = sourceText
         .split('\n')
-        .filter((l) => l.toLowerCase().includes(pattern.toLowerCase()));
-      return { output: lines.join('\n'), status: 'success' };
+        .map((l) => l.replace(/\r$/, ''))
+        .filter((l) =>
+          (ignoreCase ? l.toLowerCase().includes(pattern.toLowerCase()) : l.includes(pattern)) !== invert
+        );
+      return { output: lines.join('\n'), status: lines.length ? 'success' : 'warning' };
     }
 
     case 'attrib': {
@@ -2132,8 +2479,14 @@ function runCmdAtomic(
       }
       const grantIdx = args.findIndex((a) => a.toLowerCase() === '/grant');
       if (grantIdx !== -1 && args[grantIdx + 1]) {
+        // /grant añade (o sustituye) la entrada de ese usuario sin borrar las demás
         const rule = args[grantIdx + 1];
-        node.acl = `${rule}, BUILTIN\\Administradores:(F)`;
+        const principal = rule.split(':')[0].toLowerCase();
+        const entries = node.acl
+          .split(',')
+          .map((e) => e.trim())
+          .filter((e) => e && e.split(':')[0].toLowerCase() !== principal);
+        node.acl = [rule, ...entries].join(', ');
         return {
           output: `archivo procesado: ${args[0]}\nSe procesaron correctamente 1 archivos; error al procesar 0 archivos`,
           status: 'success',
@@ -2163,20 +2516,39 @@ function runCmdAtomic(
     }
 
     case 'repair-volume': {
-      const dDrive = state.cmdDisks.find((d) => d.id.toUpperCase() === 'D:');
-      if (dDrive) {
-        dDrive.repaired = true;
-        dDrive.status = 'Healthy';
-        dDrive.errorsFound = 0;
+      const letterIdx = args.findIndex((a) => a.toLowerCase() === '-driveletter');
+      const letter = letterIdx !== -1 ? (args[letterIdx + 1] || '').replace(':', '').toUpperCase() : '';
+      if (!letter) {
+        return {
+          output: 'Repair-Volume: falta el parámetro -DriveLetter (ej. Repair-Volume -DriveLetter D -Scan)',
+          status: 'error',
+        };
       }
-      return {
-        output: [
-          'PowerShell Storage Module - Repair-Volume (DriveLetter D)',
-          'Analizando registros MFT y clústeres dañados con -SpotFix...',
-          'NoErrorsFound / AllCorruptionsFixed: El volumen D: (Datos_Raid) se ha reparado y su estado es Healthy.',
-        ].join('\n'),
-        status: 'success',
-      };
+      const disk = state.cmdDisks.find((d) => d.id.toUpperCase() === `${letter}:`);
+      if (!disk) {
+        return {
+          output: `Repair-Volume: No se encontró ningún objeto MSFT_Volume con la propiedad 'DriveLetter' igual a '${letter}'.`,
+          status: 'error',
+        };
+      }
+      const lower = args.map((a) => a.toLowerCase());
+      // -Scan solo examina; -SpotFix y -OfflineScanAndFix corrigen
+      if (!lower.includes('-spotfix') && !lower.includes('-offlinescanandfix')) {
+        return {
+          output: disk.repaired ? 'NoErrorsFound' : 'ScanNeeded / SpotFixNeeded (vuelve a ejecutarlo con -SpotFix para corregir)',
+          status: disk.repaired ? 'success' : 'warning',
+        };
+      }
+      if (letter === 'C') {
+        return {
+          output: 'Repair-Volume: el volumen del sistema está en uso; la corrección se programa para el próximo reinicio.',
+          status: 'warning',
+        };
+      }
+      disk.repaired = true;
+      disk.status = 'Healthy';
+      disk.errorsFound = 0;
+      return { output: 'NoErrorsFound', status: 'success' };
     }
 
     case 'chkdsk': {
@@ -2210,6 +2582,20 @@ function runCmdAtomic(
         };
       }
 
+      // C: es el volumen del sistema en uso: chkdsk /f no puede bloquearlo y lo programa para el reinicio
+      if (driveArg === 'C:') {
+        return {
+          output: [
+            `El tipo del sistema de archivos es ${disk.fsType}.`,
+            `No se puede ejecutar Chkdsk porque otro proceso ya está usando el volumen.`,
+            `¿Desea que se prepare este volumen para que sea comprobado`,
+            `la próxima vez que se reinicie el sistema? (S/N) S`,
+            `Este volumen se comprobará la próxima vez que se reinicie el sistema.`,
+          ].join('\n'),
+          status: 'warning',
+        };
+      }
+
       disk.repaired = true;
       disk.status = 'Healthy';
       disk.errorsFound = 0;
@@ -2217,7 +2603,7 @@ function runCmdAtomic(
       return {
         output: [
           `El tipo del sistema de archivos es ${disk.fsType}.`,
-          `La etiqueta del volumen es Datos_Raid.`,
+          `La etiqueta del volumen es ${disk.mount.replace(/^.*\((.*)\)$/, '$1')}.`,
           `Etapa 1: Examen de la estructura básica del sistema de archivos...`,
           `  Corrigiendo entrada dañada en segmento de registro de archivo 4812.`,
           `Etapa 2: Examen de la vinculación de nombres de archivos...`,
@@ -2266,17 +2652,19 @@ function runCmdAtomic(
     case 'sfc': {
       const joined = args.join(' ').toLowerCase();
       if (joined.includes('/scannow')) {
-        state.sfcSystemFilesHealthy = true;
+        // SFC repara System32 con las copias del almacén WinSxS: si el almacén está dañado, no puede
+        const canRepair = state.dismComponentStoreHealthy;
+        if (canRepair) state.sfcSystemFilesHealthy = true;
         return {
           output: [
             `Iniciando examen en el sistema. Este proceso tardará algún tiempo.`,
             `Iniciando la fase de comprobación del examen del sistema.`,
             `Se completó la comprobación de 100%.`,
-            state.dismComponentStoreHealthy
-              ? `Protección de recursos de Windows encontró archivos dañados (kernel32_mui.dll, netapi32.dll) y los reparó correctamente desde WinSxS.`
-              : `Protección de recursos de Windows reparó los archivos principales, pero se recomienda ejecutar 'dism /online /cleanup-image /restorehealth' para sanear la imagen origen.`,
+            canRepair
+              ? `Protección de recursos de Windows encontró archivos dañados y los reparó correctamente.`
+              : `Protección de recursos de Windows encontró archivos dañados pero no pudo reparar algunos de ellos.\n[El origen de las reparaciones (WinSxS) también está dañado: ejecuta antes dism /online /cleanup-image /restorehealth y repite sfc /scannow]`,
           ].join('\n'),
-          status: 'success',
+          status: canRepair ? 'success' : 'warning',
         };
       }
       return {
@@ -2331,6 +2719,16 @@ function runCmdAtomic(
         return {
           output: `ACCESO DENEGADO por el Sandbox: ${targetProc.name} (PID ${targetProc.pid}) es un proceso crítico del sistema operativo Windows.`,
           status: 'warning',
+        };
+      }
+
+      // taskkill sin /F solo pide el cierre y un proceso colgado no lo atiende
+      // (Stop-Process ya termina el proceso directamente)
+      const forced = args.some((a) => a.toLowerCase() === '/f');
+      if (cmd === 'taskkill' && !forced && targetProc.status === 'Hung / High CPU') {
+        return {
+          output: `ERROR: el proceso "${targetProc.name}" con PID ${targetProc.pid} no se pudo terminar.\nRazón: Este proceso solo se puede terminar forzosamente (con la opción /F).`,
+          status: 'error',
         };
       }
 
@@ -2641,7 +3039,7 @@ function buildDidactic(
       securityAndSafetyTip:
         'Verifica siempre el PID exacto antes de usar -9 (SIGKILL) o /F para no interrumpir transacciones de bases de datos o demonios críticos.',
       realWorldImpact:
-        'Libera recursos de CPU y memoria secuestrados por procesos zombis, bucles infinitos o binarios no autorizados.',
+        'Libera recursos de CPU y memoria secuestrados por procesos colgados, bucles infinitos o binarios no autorizados.',
     };
   }
 

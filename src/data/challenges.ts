@@ -16,7 +16,7 @@ function getWinNode(root: VFSNode, pathStr: string): VFSNode | null {
   let curr: VFSNode | undefined = root;
   for (const p of parts) {
     if (!curr || curr.type !== 'dir' || !curr.children) return null;
-    const matchKey = Object.keys(curr.children).find(
+    const matchKey: string | undefined = Object.keys(curr.children).find(
       (k) => k.toLowerCase() === p.toLowerCase()
     );
     curr = matchKey ? curr.children[matchKey] : undefined;
@@ -283,9 +283,9 @@ export const GUIDED_CHALLENGES: GuidedChallenge[] = [
     difficulty: 'Intermedio',
     xp: 160,
     scenario:
-      'El volumen de datos /dev/sdb1 se ha montado en solo lectura por inodos huérfanos y bloques inconsistentes en el superbloque ext4. Inspecciona los bloques y ejecuta fsck para sanearlo.',
+      'El volumen de datos /dev/sdb1 se ha montado en solo lectura por inodos huérfanos y bloques inconsistentes en el superbloque ext4. Inspecciona los bloques, desmonta el volumen (fsck nunca debe reparar un sistema de ficheros montado), sanéalo y vuelve a montarlo.',
     learningObjective:
-      'Inspeccionar dispositivos de bloques con lsblk/df y reparar sistemas de ficheros Linux con sudo fsck -y.',
+      'Inspeccionar dispositivos de bloques con lsblk/df, desmontar con umount, reparar con sudo fsck -y y volver a montar con mount.',
     steps: [
       {
         id: 'r6-s1',
@@ -299,12 +299,33 @@ export const GUIDED_CHALLENGES: GuidedChallenge[] = [
       {
         id: 'r6-s2',
         instruction:
+          'Desmonta el volumen /mnt/datos: e2fsck se niega a reparar un sistema de ficheros montado porque podría corromperlo.',
+        hint: 'Ejecuta sudo umount /mnt/datos (o sudo umount /dev/sdb1)',
+        exampleCommand: 'sudo umount /mnt/datos',
+        validate: (_cmd, _shell, state) => {
+          const sdb1 = state.bashDisks.find((d) => d.id === '/dev/sdb1');
+          return Boolean(sdb1 && (sdb1.mounted === false || sdb1.repaired));
+        },
+      },
+      {
+        id: 'r6-s3',
+        instruction:
           'Repara automáticamente todos los inodos dañados en /dev/sdb1 ejecutando fsck con privilegios sudo y bandera -y.',
         hint: 'Ejecuta sudo fsck -y /dev/sdb1',
         exampleCommand: 'sudo fsck -y /dev/sdb1',
         validate: (_cmd, _shell, state) => {
           const sdb1 = state.bashDisks.find((d) => d.id === '/dev/sdb1');
           return Boolean(sdb1 && sdb1.repaired && sdb1.status === 'Healthy');
+        },
+      },
+      {
+        id: 'r6-s4',
+        instruction: 'Vuelve a montar el volumen ya reparado en su punto de montaje de /etc/fstab.',
+        hint: 'Ejecuta sudo mount /dev/sdb1 (o sudo mount -a)',
+        exampleCommand: 'sudo mount /dev/sdb1',
+        validate: (_cmd, _shell, state) => {
+          const sdb1 = state.bashDisks.find((d) => d.id === '/dev/sdb1');
+          return Boolean(sdb1 && sdb1.repaired && sdb1.mounted !== false);
         },
       },
     ],
@@ -379,7 +400,7 @@ export const GUIDED_CHALLENGES: GuidedChallenge[] = [
   {
     id: 'reto-09-bash-ps-kill',
     number: '09',
-    title: 'Eliminación de Proceso Zombi en Servidor Linux (PS + KILL)',
+    title: 'Eliminación de Proceso Descontrolado en Servidor Linux (PS + KILL)',
     category: 'sistema',
     categoryLabel: 'Herramientas de Sistema',
     shell: 'bash',
@@ -599,21 +620,30 @@ export const GUIDED_CHALLENGES: GuidedChallenge[] = [
     difficulty: 'Intermedio',
     xp: 170,
     scenario:
-      'El servidor Linux tiene el cortafuegos perimetral desactivado y varios demonios escuchando en interfaces públicas. Inspecciona los puertos en escucha con ss y activa el cortafuegos UFW.',
+      'El servidor Linux tiene el cortafuegos perimetral desactivado y varios demonios escuchando en interfaces públicas. Inspecciona los puertos en escucha con ss, permite SSH para no quedarte fuera y activa el cortafuegos UFW.',
     learningObjective:
-      'Auditar sockets de red con ss -tulnp y habilitar el cortafuegos Uncomplicated Firewall (sudo ufw enable).',
+      'Auditar sockets de red con sudo ss -tulnp, abrir el puerto de SSH antes de nada (sudo ufw allow OpenSSH) y habilitar UFW (sudo ufw enable).',
     steps: [
       {
         id: 'r14-s1',
         instruction:
           'Muestra todos los sockets TCP y UDP en escucha junto al proceso propietario con ss -tulnp.',
-        hint: 'Ejecuta ss -tulnp o netstat -tulnp',
-        exampleCommand: 'ss -tulnp',
+        hint: 'Ejecuta sudo ss -tulnp (sin sudo no verás qué proceso hay detrás de los sockets de otros usuarios)',
+        exampleCommand: 'sudo ss -tulnp',
         validate: (cmd, shell) =>
-          shell === 'bash' && /^(ss|netstat)\s+/i.test(cmd.trim()),
+          shell === 'bash' && /^(sudo\s+)?(ss|netstat)\s+/i.test(cmd.trim()),
       },
       {
         id: 'r14-s2',
+        instruction:
+          'Antes de activar el cortafuegos, permite el tráfico SSH: la política por defecto de UFW bloquea todo lo entrante y en un servidor remoto perderías el acceso.',
+        hint: 'Ejecuta sudo ufw allow OpenSSH (o sudo ufw allow 22/tcp)',
+        exampleCommand: 'sudo ufw allow OpenSSH',
+        validate: (_cmd, _shell, state) =>
+          (state.bashFirewallRules ?? []).some((r) => /^(22|22\/tcp)\s+ALLOW$/.test(r)),
+      },
+      {
+        id: 'r14-s3',
         instruction:
           'Activa el cortafuegos del servidor ejecutando sudo ufw enable.',
         hint: 'Ejecuta sudo ufw enable',
@@ -700,6 +730,17 @@ export const GUIDED_CHALLENGES: GuidedChallenge[] = [
             node && node.content && node.content.includes('deploy.sh')
           );
         },
+      },
+      {
+        id: 'r16-s3',
+        instruction:
+          'Comprueba la integridad del script contra la firma guardada con sha256sum -c: si alguien lo hubiera modificado, la suma no coincidiría.',
+        hint: 'Ejecuta sha256sum -c checksum.sha256',
+        exampleCommand: 'sha256sum -c checksum.sha256',
+        validate: (cmd, shell, _state, lastEntry) =>
+          shell === 'bash' &&
+          /^sha256sum\s+(-c|--check)\s+\S+/i.test(cmd.trim()) &&
+          Boolean(lastEntry && lastEntry.status === 'success' && /La suma coincide/.test(lastEntry.output)),
       },
     ],
   },
