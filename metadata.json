@@ -1,0 +1,6 @@
+{
+  "name": "Entrenador de Línea de Comandos (CLI Sandbox) - Un Fantasma en el Sistema",
+  "description": "Emulador interactivo en JavaScript de consola dual (CMD/PowerShell y Bash) con retos guiados de administración de sistemas, permisos, reparación de discos (chkdsk, fsck), herramientas (sfc, dism, taskkill, ps), redirecciones y sistema de logros.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,91 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 600" width="100%" height="100%">
+  <defs>
+    <linearGradient id="bgGrad3" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#020617" />
+      <stop offset="100%" stop-color="#0f172a" />
+    </linearGradient>
+    <style>
+      .sans { font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif; }
+      .mono { font-family: 'JetBrains Mono', ui-monospace, monospace; }
+    </style>
+  </defs>
+
+  <rect width="1200" height="600" fill="url(#bgGrad3)" rx="12" />
+
+  <!-- Header Section -->
+  <text x="24" y="46" fill="#ffffff" font-size="20" font-weight="700" class="sans">Logros, Certificación Técnica y Respaldo de Progreso</text>
+  <rect x="740" y="24" width="195" height="32" rx="6" fill="#0284c7" />
+  <text x="758" y="44" fill="#ffffff" font-size="12" font-weight="600" class="sans">⬇ Descargar Certificado (.TXT)</text>
+  <rect x="945" y="24" width="110" height="32" rx="6" fill="#1e293b" />
+  <text x="960" y="44" fill="#e2e8f0" font-size="12" font-weight="500" class="sans">Exportar JSON</text>
+  <rect x="1065" y="24" width="110" height="32" rx="6" fill="#1e293b" />
+  <text x="1080" y="44" fill="#e2e8f0" font-size="12" font-weight="500" class="sans">Importar JSON</text>
+
+  <!-- Credential Card -->
+  <rect x="24" y="76" width="1152" height="120" rx="12" fill="#0f172a" stroke="#1e293b" stroke-width="1.5" />
+  <circle cx="80" cy="136" r="34" fill="#0284c7" opacity="0.15" stroke="#38bdf8" stroke-width="1.5" />
+  <text x="64" y="144" fill="#38bdf8" font-size="22" font-weight="700" class="mono">👻</text>
+  <text x="135" y="110" fill="#38bdf8" font-size="12" font-weight="600" class="sans">Credencial Técnica de Laboratorio CLI · Un Fantasma en el Sistema</text>
+  <text x="135" y="140" fill="#ffffff" font-size="18" font-weight="700" class="sans">Operador: SysAdmin_Operador</text>
+  <text x="135" y="168" fill="#94a3b8" font-size="12" class="sans">Rango actual: <tspan fill="#f8fafc" font-weight="700">Fantasma en el Sistema (Maestro CLI)</tspan> · Retos en Modo Examen: 16</text>
+
+  <!-- KPI Metrics -->
+  <rect x="650" y="98" width="118" height="74" rx="8" fill="#020617" stroke="#1e293b" stroke-width="1" />
+  <text x="666" y="122" fill="#94a3b8" font-size="11" class="sans">Experiencia</text>
+  <text x="666" y="152" fill="#ffffff" font-size="18" font-weight="700" class="mono">4.120 XP</text>
+
+  <rect x="780" y="98" width="118" height="74" rx="8" fill="#020617" stroke="#1e293b" stroke-width="1" />
+  <text x="796" y="122" fill="#94a3b8" font-size="11" class="sans">Retos</text>
+  <text x="796" y="152" fill="#10b981" font-size="18" font-weight="700" class="mono">16 / 16</text>
+
+  <rect x="910" y="98" width="118" height="74" rx="8" fill="#020617" stroke="#1e293b" stroke-width="1" />
+  <text x="926" y="122" fill="#94a3b8" font-size="11" class="sans">Logros</text>
+  <text x="926" y="152" fill="#f59e0b" font-size="18" font-weight="700" class="mono">12 / 12</text>
+
+  <rect x="1040" y="98" width="118" height="74" rx="8" fill="#020617" stroke="#1e293b" stroke-width="1" />
+  <text x="1056" y="122" fill="#94a3b8" font-size="11" class="sans">Comandos</text>
+  <text x="1056" y="152" fill="#38bdf8" font-size="18" font-weight="700" class="mono">84</text>
+
+  <!-- Achievements Grid -->
+  <rect x="24" y="220" width="368" height="160" rx="10" fill="#0f172a" stroke="#f59e0b" stroke-opacity="0.45" stroke-width="1.5" />
+  <text x="48" y="254" fill="#ffffff" font-size="14" font-weight="700" class="sans">🏆 Cirujano de Sistemas de Archivos</text>
+  <text x="315" y="254" fill="#fbbf24" font-size="12" font-weight="700" class="mono">+120 XP</text>
+  <text x="48" y="282" fill="#cbd5e1" font-size="11.5" class="sans">Diagnosticaste y reparaste sectores e inodos</text>
+  <text x="48" y="300" fill="#cbd5e1" font-size="11.5" class="sans">dañados mediante chkdsk /f /r o fsck -y.</text>
+  <text x="48" y="345" fill="#34d399" font-size="11" font-weight="700" class="sans">✓ Desbloqueado</text>
+
+  <rect x="416" y="220" width="368" height="160" rx="10" fill="#0f172a" stroke="#f59e0b" stroke-opacity="0.45" stroke-width="1.5" />
+  <text x="440" y="254" fill="#ffffff" font-size="14" font-weight="700" class="sans">🏆 Especialista en Integridad WinSxS</text>
+  <text x="707" y="254" fill="#fbbf24" font-size="12" font-weight="700" class="mono">+150 XP</text>
+  <text x="440" y="282" fill="#cbd5e1" font-size="11.5" class="sans">Restauraste la imagen del sistema con DISM</text>
+  <text x="440" y="300" fill="#cbd5e1" font-size="11.5" class="sans">/RestoreHealth y reparaste DLL con sfc /scannow.</text>
+  <text x="440" y="345" fill="#34d399" font-size="11" font-weight="700" class="sans">✓ Desbloqueado</text>
+
+  <rect x="808" y="220" width="368" height="160" rx="10" fill="#0f172a" stroke="#f59e0b" stroke-opacity="0.45" stroke-width="1.5" />
+  <text x="832" y="254" fill="#ffffff" font-size="14" font-weight="700" class="sans">🏆 Un Fantasma en el Sistema</text>
+  <text x="1100" y="254" fill="#fbbf24" font-size="12" font-weight="700" class="mono">+500 XP</text>
+  <text x="832" y="282" fill="#cbd5e1" font-size="11.5" class="sans">Completaste el 100% de los 16 retos guiados</text>
+  <text x="832" y="300" fill="#cbd5e1" font-size="11.5" class="sans">en Linux y Windows sin dañar el entorno.</text>
+  <text x="832" y="345" fill="#34d399" font-size="11" font-weight="700" class="sans">✓ Desbloqueado</text>
+
+  <rect x="24" y="400" width="368" height="160" rx="10" fill="#0f172a" stroke="#f59e0b" stroke-opacity="0.45" stroke-width="1.5" />
+  <text x="48" y="434" fill="#ffffff" font-size="14" font-weight="700" class="sans">🏆 Centinela de Red y Cortafuegos</text>
+  <text x="315" y="434" fill="#fbbf24" font-size="12" font-weight="700" class="mono">+140 XP</text>
+  <text x="48" y="462" fill="#cbd5e1" font-size="11.5" class="sans">Auditaste puertos activos (ss/netstat), activaste</text>
+  <text x="48" y="480" fill="#cbd5e1" font-size="11.5" class="sans">el firewall UFW y saneaste la caché DNS.</text>
+  <text x="48" y="525" fill="#34d399" font-size="11" font-weight="700" class="sans">✓ Desbloqueado</text>
+
+  <rect x="416" y="400" width="368" height="160" rx="10" fill="#0f172a" stroke="#f59e0b" stroke-opacity="0.45" stroke-width="1.5" />
+  <text x="440" y="434" fill="#ffffff" font-size="14" font-weight="700" class="sans">🏆 Certificación bajo Presión (Examen)</text>
+  <text x="707" y="434" fill="#fbbf24" font-size="12" font-weight="700" class="mono">+175 XP</text>
+  <text x="440" y="462" fill="#cbd5e1" font-size="11.5" class="sans">Superaste un reto completo con el Modo Examen</text>
+  <text x="440" y="480" fill="#cbd5e1" font-size="11.5" class="sans">activo (sin pistas ni autocompletado asistido).</text>
+  <text x="440" y="525" fill="#34d399" font-size="11" font-weight="700" class="sans">✓ Desbloqueado</text>
+
+  <rect x="808" y="400" width="368" height="160" rx="10" fill="#0f172a" stroke="#f59e0b" stroke-opacity="0.45" stroke-width="1.5" />
+  <text x="832" y="434" fill="#ffffff" font-size="14" font-weight="700" class="sans">🏆 Maestro de Flujos y Tuberías</text>
+  <text x="1100" y="434" fill="#fbbf24" font-size="12" font-weight="700" class="mono">+110 XP</text>
+  <text x="832" y="462" fill="#cbd5e1" font-size="11.5" class="sans">Combinaste tuberías (|) con filtrado (grep/findstr)</text>
+  <text x="832" y="480" fill="#cbd5e1" font-size="11.5" class="sans">y redirección de salida a fichero (&gt; o &gt;&gt;).</text>
+  <text x="832" y="525" fill="#34d399" font-size="11" font-weight="700" class="sans">✓ Desbloqueado</text>
+</svg>
